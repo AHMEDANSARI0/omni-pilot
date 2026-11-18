@@ -1,0 +1,5 @@
+DATE,TOPIC,CONTENT TYPE,KEY POINTS,TARGET AUDIENCE,STATUS,GENERATED POST,HASHTAGS,APPROVAL,PUBLISH TIME,PUBLISHED URL
+2026-11-17,Idempotency keys for agent tool calls,insight,"Agents retried tool calls after timeouts and created duplicate records. Fix: hash of tool name + arguments stored before returning; retries resume instead of repeating.",Engineers building agents,Pending,,,,09:30,
+2026-11-18,Separating transport retries from business retries,how-to,"Two retry layers caused confusing duplication. Transport retries are automatic and safe; business retries need an explicit decision and persisted state.",Backend engineers,Pending,,,,09:30,
+2026-11-19,What broke first in our Python workflow automation,story,"Scheduler overlap created concurrent runs. A claim table with SKIP LOCKED plus explicit status transitions fixed it.",Python developers,Pending,,,,09:30,
+2026-11-20,A practical checklist before shipping an AI workflow,list,"Validate inputs at the boundary; store every step outcome; make side effects idempotent; surface typed failures; keep a human in the loop for irreversible actions.",Technical founders,Pending,,,,09:30,

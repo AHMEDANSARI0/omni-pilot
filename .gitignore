@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+.wrangler/
+.wrangler-dist/
+dist/
+coverage/
+*.log
+.env
+.env.local
+.env.*.local
+.dev.vars
+.DS_Store
+next-env.d.ts
+tsconfig.tsbuildinfo

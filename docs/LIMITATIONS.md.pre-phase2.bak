@@ -1,0 +1,104 @@
+# Limitations, free-tier limits and verification status
+
+This document is deliberately blunt: it separates what has been tested here from what needs your credentials
+in a real deployment.
+
+## 1. Verified in this repository (automated)
+
+All of the following run with `npm test` against real business logic, a real Hono app instance and the
+in-memory database adapter — no network:
+
+- scheduling maths: timezones, DST transitions (New York summer/winter/spring-forward), ISO weekdays,
+  generation window, next-slot skipping weekends, publish-time behaviour, `respectPublishTime` on/off
+- sheet parsing: header aliases, serial dates, ISO/DMY/month-name dates, invalid rows, handled rows, empty sheet
+- content: hashtag normalisation/de-duplication, composition, splitting edited text, length/hashtag/placeholder
+  validation, generic-AI-phrase detection
+- crypto: AES-GCM round-trip, random IVs, tamper detection, wrong-key failure, HMAC token hashing, redaction
+- generation: happy path, duplicate-day guard, no-topic, AI errors, validation retry, email failure,
+  Sheets outage fallback, sheet write failure, recent-hook de-duplication
+- approval: single-use tokens, expiry (`GONE`), reject path, dashboard path, resend + token rotation,
+  queued publish, preview states
+- publishing: LinkedIn success, idempotent republish, non-approved rejection, manual fallback on missing
+  auth, retry backoff, retry exhaustion, non-retryable 422, manual URL validation, crash recovery
+- scheduler tick: not-due, once-per-day, attempt limit, publish sweep, approval expiry sweep, LinkedIn
+  expiry warning, dependency failures never throw
+- API: auth (401/403), validation (422), cron secret, full generate → approve → publish flow, 404s,
+  malformed JSON, duplicate topic creation
+- PostgREST adapter: service-role headers, filter/order/limit query building, `resolution=ignore-duplicates`
+  vs `resolution=merge-duplicates` upserts, `23505` → `CONFLICT`, single 500 retry, `content-range` counts,
+  RPC argument names, OAuth-state delete-then-validate, unreachable-database error mapping
+- build/deploy shape: `tsc --noEmit` clean, `next build` static export (11 routes),
+  `wrangler deploy --dry-run` bundles the Worker (≈87 KB gzip) with the assets binding
+
+A local end-to-end run was also executed against the real HTTP server (local mode): sync → generate → approval
+email (outbox) → token preview → approve → queued publish → replay blocked with 409 → manual record → history
+and audit logs.
+
+## 2. Requires your credentials — not executed here (by design)
+
+These code paths are implemented and unit-tested with fakes, but they were **not** exercised against the live
+services because no credentials exist in this environment. Treat them as "implemented, needs one live check":
+
+| Integration | What to verify first | Documented in |
+| --- | --- | --- |
+| Google Sheets API | *Test read* returns your rows; a generated post updates `STATUS`/`GENERATED POST` | SETUP §2–3 |
+| Google OAuth refresh | token refresh after >1 hour still reads the sheet | SETUP §3 |
+| Gemini API | *Test generation* returns JSON; model name valid for your free tier | SETUP §4 |
+| Resend | test email arrives; approval email renders on a phone | SETUP §5 |
+| LinkedIn OAuth + Posts API | *Connect LinkedIn* then approve a test post and confirm the URL | SETUP §6 |
+| Supabase project | `npm run db:verify` passes on your project | SETUP §1 |
+| Cloudflare Cron | Workers → Logs shows `[cron]` lines at 5-minute intervals | SETUP §7–8 |
+
+Honest risk notes:
+
+- **PostgREST mapping** (`src/adapters/db/postgrest.ts`) is covered by `tests/postgrest.test.ts` against a fake
+  `fetch` (request shape, upsert `Prefer` headers, conflict mapping, retries, RPC arguments, count parsing,
+  OAuth-state single use), but it has not been run against a live Supabase instance from this environment.
+  `npm run db:verify` plus the production checklist is the live check.
+- **Gemini model names** change over time. If generation fails with a 404/400 for the model, set
+  `GEMINI_MODEL` (or the AI settings field) to a model your key can use.
+- **LinkedIn `LinkedIn-Version`** must be a supported version; it is configurable (`LINKEDIN_API_VERSION`).
+
+## 3. LinkedIn API reality (checked for 2026)
+
+- Publishing to **your own profile** uses the self-serve **Share on LinkedIn** product with scope
+  `w_member_social` — free, no partner review.
+- **Reading your own posts back** (`r_member_social`) is closed to new apps, so post URLs come from the
+  publish response (`x-restli-id`), not from a follow-up read.
+- Self-serve tokens last **60 days** and there is **no refresh token**; the system emails you at 7 days remaining
+  and refuses to publish with an expired token, switching to the manual fallback instead.
+- Share on LinkedIn allows roughly **150 requests per member per day**; this system uses one.
+- Comments, reactions, analytics and company-page publishing are **not** part of the self-serve tier and are
+  not implemented.
+
+## 4. Free-tier limits you may hit
+
+| Service | Limit | Impact |
+| --- | --- | --- |
+| Cloudflare Workers | 100 000 requests/day | irrelevant at this scale (≈300/day) |
+| Cloudflare Cron | 5 triggers, 1-minute minimum granularity | we use 1 trigger at 5 minutes |
+| Cloudflare CPU | 10 ms CPU per request on the free plan | Gemini calls are I/O bound, fine; very large sheets could get close |
+| Supabase free | 500 MB DB, project pauses after 7 days idle | the cron keeps it warm; logs are pruned manually |
+| Supabase free | 2 projects, 60 direct connections, no PITR | irrelevant for this design (PostgREST, no pooling code) |
+| Gemini free tier | per-model per-day request caps | 1–2 calls/day used; a capped run fails loudly and retries |
+| Resend free | 100 emails/day, 3 000/month; unverified domain can only email the account owner | 1–3 emails/day |
+| Google Sheets API | 300 requests/minute/project, 60/minute/user | ~6/day |
+
+No paid dependencies are required, and nothing here requires a trial that expires.
+
+## 5. Functional limitations (intentional scope)
+
+- **One post per day.** `generated_posts.run_date` is unique by design (this is what makes duplicate prevention
+  trivial). Multiple posts/day would need a schema change, not a rewrite.
+- **Text-only posts.** No images, carousels, documents, or video (future work; the LinkedIn adapter would gain a
+  media-upload step).
+- **One owner.** Single-user settings, no workspaces, no billing, no public API keys — matching the "not a SaaS"
+  requirement.
+- **Approval is per post.** No "approve everything for this week" batch action.
+- **Content quality is bounded by the topic input.** The writing rules forbid inventing statistics, but the AI can
+  still produce a weak draft; edit it in the dashboard before approving (edits are recorded with `editedByOwner`).
+- **Rate limiting is best-effort per isolate.** Cloudflare's native rate-limiting rules are the durable backstop
+  for `/auth/login` if you ever expose the dashboard publicly.
+- **Timezone support** relies on the IANA database inside the runtime (`Intl`); unknown zones are rejected at
+  validation time.
+- **No analytics/engagement tracking** — the API cannot read your post's performance.

@@ -1,0 +1,209 @@
+'use client';
+
+import * as React from 'react';
+import { api } from '@/lib/api';
+import { useAction } from '@/lib/hooks';
+import type { PostDto } from '@/lib/types';
+import {
+  Button,
+  Input,
+  Textarea,
+  IconApprove,
+  IconClose,
+  IconEdit,
+  IconPublish,
+  IconRefresh,
+  IconUndo,
+} from '@/ui';
+import { useToast } from './toast';
+
+export function PostActions({
+  post,
+  onDone,
+  onOptimistic,
+}: {
+  post: PostDto;
+  onDone: () => void;
+  /** Called with the expected status the moment the user acts, so lists can update instantly. */
+  onOptimistic?: (status: string) => void;
+}) {
+  const { busy, run } = useAction();
+  const { toast } = useToast();
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(post.fullText);
+  const [manualUrl, setManualUrl] = React.useState('');
+  const [showManual, setShowManual] = React.useState(false);
+
+  const decide = (action: 'approve' | 'reject') => {
+    const optimisticStatus = action === 'approve' ? 'approved' : 'rejected';
+    onOptimistic?.(optimisticStatus);
+    return run(
+      () =>
+        api.post<{ publish: { message: string } | null }>(`/approvals/${post.id}/decision`, {
+          action,
+        }),
+      (result) => {
+        toast(
+          result.publish?.message ?? `Post ${action === 'approve' ? 'approved' : 'rejected'}.`,
+          'success',
+        );
+        onDone();
+      },
+      (message) => {
+        onOptimistic?.(post.status);
+        toast(message, 'error');
+      },
+    );
+  };
+
+  const publish = () =>
+    run(
+      () => api.post<{ status: string; message: string }>(`/publishing/posts/${post.id}/publish`),
+      (result) => {
+        onOptimistic?.(result.status === 'published' ? 'published' : 'publishing');
+        toast(result.message, result.status === 'published' ? 'success' : 'info');
+        onDone();
+      },
+      (message) => toast(message, 'error'),
+    );
+
+  const retry = () =>
+    run(
+      () => api.post(`/publishing/posts/${post.id}/retry`),
+      () => {
+        onOptimistic?.('approved');
+        toast('Retry queued. The next scheduler tick will attempt publishing.', 'success');
+        onDone();
+      },
+      (message) => toast(message, 'error'),
+    );
+
+  const saveEdit = () =>
+    run(
+      () => api.patch<{ post: PostDto }>(`/content/posts/${post.id}`, { fullText: draft }),
+      () => {
+        toast('Post updated.', 'success');
+        setEditing(false);
+        onDone();
+      },
+      (message) => toast(message, 'error'),
+    );
+
+  const saveManual = () =>
+    run(
+      () => api.post(`/publishing/posts/${post.id}/manual`, { url: manualUrl.trim() }),
+      () => {
+        onOptimistic?.('published');
+        toast('Manual publish recorded.', 'success');
+        setShowManual(false);
+        onDone();
+      },
+      (message) => toast(message, 'error'),
+    );
+
+  const canEdit = !['published', 'publishing'].includes(post.status);
+
+  return (
+    <div className="space-y-2">
+      {editing ? (
+        <div className="space-y-2 rounded-lg border border-border bg-canvas p-2.5">
+          <Textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            rows={10}
+            className="bg-card"
+          />
+          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+            <span className="tabular">{Array.from(draft).length} characters</span>
+            <div className="flex gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" loading={busy} onClick={saveEdit}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showManual ? (
+        <div className="space-y-2 rounded-lg border border-warning/25 bg-warning-soft p-2.5">
+          <p className="text-[12px] leading-relaxed text-warning-foreground">
+            Paste the post on LinkedIn, then record the published URL here so history stays
+            accurate.
+          </p>
+          <Input
+            value={manualUrl}
+            onChange={(event) => setManualUrl(event.target.value)}
+            placeholder="https://www.linkedin.com/feed/update/…"
+            inputMode="url"
+            className="bg-card"
+          />
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setShowManual(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" loading={busy} disabled={!manualUrl.trim()} onClick={saveManual}>
+              Record
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2">
+        {post.status === 'pending_approval' ? (
+          <>
+            <Button size="sm" variant="success" loading={busy} onClick={() => decide('approve')}>
+              <IconApprove className="h-4 w-4" aria-hidden /> Approve
+            </Button>
+            <Button size="sm" variant="outline" loading={busy} onClick={() => decide('reject')}>
+              <IconClose className="h-4 w-4" aria-hidden /> Reject
+            </Button>
+          </>
+        ) : null}
+
+        {post.status === 'approved' ? (
+          <Button size="sm" loading={busy} onClick={publish}>
+            <IconPublish className="h-4 w-4" aria-hidden /> Publish now
+          </Button>
+        ) : null}
+
+        {['failed', 'rejected', 'expired'].includes(post.status) ? (
+          <Button size="sm" variant="outline" loading={busy} onClick={retry}>
+            <IconRefresh className="h-4 w-4" aria-hidden /> Retry publish
+          </Button>
+        ) : null}
+
+        {post.status === 'published' && post.publishedUrl ? (
+          <a
+            href={post.publishedUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-[13px] font-medium text-primary"
+          >
+            View on LinkedIn
+          </a>
+        ) : null}
+
+        {['approved', 'failed', 'pending_approval'].includes(post.status) || post.errorMessage ? (
+          <Button size="sm" variant="ghost" onClick={() => setShowManual((value) => !value)}>
+            <IconUndo className="h-4 w-4" aria-hidden /> Record manual publish
+          </Button>
+        ) : null}
+
+        {canEdit ? (
+          <Button size="sm" variant="ghost" onClick={() => setEditing((value) => !value)}>
+            <IconEdit className="h-4 w-4" aria-hidden /> Edit
+          </Button>
+        ) : null}
+      </div>
+
+      {post.errorMessage ? (
+        <p className="rounded-md bg-danger-soft px-2.5 py-1.5 text-[12px] leading-relaxed text-danger-foreground">
+          {post.errorMessage}
+        </p>
+      ) : null}
+    </div>
+  );
+}

@@ -1,0 +1,29 @@
+# Cloudflare Worker: serves /api/v1/* (Hono) and the statically exported Next.js
+# dashboard from ./out. Local dev uses `npm run dev` (Node + Next dev server).
+name = "linkedin-ai-automation"
+main = "src/worker/index.ts"
+compatibility_date = "2025-03-01"
+
+[assets]
+directory = "./out"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[observability]
+enabled = true
+
+# Scheduler: single 5-minute tick. All timezone/day logic lives in code
+# (see src/core/schedule.ts) so DST and custom publish times stay correct.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+APP_ENV = "production"
+
+# Secrets (set with `wrangler secret put <NAME>`): see docs/SETUP.md
+# SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY SUPABASE_ANON_KEY OWNER_EMAIL
+# TOKEN_ENCRYPTION_KEY CRON_SECRET APPROVAL_TOKEN_SECRET APP_BASE_URL
+# GEMINI_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_SHEET_ID GOOGLE_SHEET_TAB
+# RESEND_API_KEY RESEND_FROM_EMAIL LINKEDIN_CLIENT_ID LINKEDIN_CLIENT_SECRET
+# LINKEDIN_API_VERSION

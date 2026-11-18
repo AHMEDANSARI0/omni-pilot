@@ -1,0 +1,69 @@
+import { describe, expect, it } from 'vitest';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+// @ts-expect-error - plain Node ESM helper script, no type declarations needed
+import { checkUi } from '../scripts/check-ui.mjs';
+
+const ROOT = process.cwd();
+const read = (path: string) => readFileSync(join(ROOT, path), 'utf8');
+
+describe('UI separation', () => {
+  it('keeps every colour and icon inside ui/', () => {
+    const violations = checkUi(ROOT);
+    expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
+  });
+
+  it('has no raw palette or hex colours in application files', () => {
+    const violations = checkUi(ROOT).filter((item: { rule: string }) =>
+      item.rule.includes('colour'),
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it('exposes the design system through a single entry point', () => {
+    const barrel = read('ui/index.ts');
+    expect(barrel).toContain("export * from './primitives'");
+    expect(barrel).toContain("export * from './icons'");
+    // The shell is intentionally a separate entry point so pages stay small.
+    expect(barrel).not.toContain("export * from './layout'");
+    expect(read('ui/shell.ts')).toContain("export * from './layout'");
+  });
+
+  it('keeps tokens in one place and the Tailwind theme read from them', () => {
+    const tokens = read('ui/tokens.css');
+    for (const variable of ['--ink', '--accent', '--glass-alpha', '--shadow-glass', '--mesh']) {
+      expect(tokens).toContain(variable);
+    }
+    const tailwind = read('tailwind.config.ts');
+    expect(tailwind).toContain('hsl(var(--ink))');
+    expect(tailwind).toContain('./ui/**/*.{ts,tsx}');
+  });
+
+  it('addresses icons by meaning, not by shape', () => {
+    const icons = read('ui/icons.tsx');
+    for (const name of ['IconApprove', 'IconReject', 'IconPosts', 'IconWhatsapp', 'IconSheets']) {
+      expect(icons).toContain(`export const ${name}`);
+    }
+    expect(icons).toContain("from 'lucide-react'");
+    // Only the registry may import the icon library.
+    expect(existsSync(join(ROOT, 'ui/icons.tsx'))).toBe(true);
+  });
+
+  it('has no legacy ui sources left behind', () => {
+    // Empty folders or leftover .bak backups are harmless (Windows often keeps a folder
+    // handle open), so only real component files count as a leftover.
+    const leftovers: string[] = [];
+    for (const folder of ['components/ui', 'components/layout']) {
+      const dir = join(ROOT, folder);
+      if (!existsSync(dir)) continue;
+      for (const name of readdirSync(dir)) {
+        if (name.endsWith('.bak')) continue;
+        leftovers.push(`${folder}/${name}`);
+      }
+    }
+    expect(leftovers, `still in the old folders, move into ui/: ${leftovers.join(', ')}`).toEqual(
+      [],
+    );
+    expect(existsSync(join(ROOT, 'app/globals.css'))).toBe(false);
+  });
+});

@@ -1,0 +1,54 @@
+{
+  "name": "linkedin-ai-automation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Personal LinkedIn AI content automation with Google Sheets planning, AI generation, email approval and official LinkedIn API publishing.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch --env-file=.env.local src/dev/node.ts",
+    "dev:web": "next dev -p 3000",
+    "build": "next build",
+    "build:worker": "npm run build && wrangler deploy --dry-run --outdir=.wrangler-dist",
+    "deploy": "npm run build && wrangler deploy",
+    "start": "tsx --env-file=.env.local src/dev/node.ts",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "lint:format": "prettier --check .",
+    "test": "vitest run",
+    "doctor": "node scripts/doctor.mjs",
+    "check:ui": "node scripts/check-ui.mjs",
+    "test:watch": "vitest",
+    "db:verify": "tsx scripts/verify-db.ts",
+    "cron:local": "tsx --env-file=.env.local scripts/run-cron.ts"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "hono": "^4.9.7",
+    "lucide-react": "^0.468.0",
+    "next": "^15.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwind-merge": "^2.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "postcss": "^8.4.49",
+    "prettier": "^3.4.2",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.162.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

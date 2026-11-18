@@ -1,0 +1,93 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ApiRequestError, api } from './api';
+
+export interface AsyncState<T> {
+  data: T | null;
+  error: string | null;
+  errorCode: string | null;
+  loading: boolean;
+  reload: () => void;
+}
+
+/** Minimal data hook: no external cache library, adequate for a single-user dashboard. */
+export function useApi<T>(path: string | null, options: { enabled?: boolean } = {}): AsyncState<T> {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [loading, setLoading] = useState(Boolean(path));
+  const [version, setVersion] = useState(0);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!path || options.enabled === false) return;
+    let cancelled = false;
+    setLoading(true);
+    api
+      .get<T>(path)
+      .then((result) => {
+        if (cancelled || !mounted.current) return;
+        setData(result);
+        setError(null);
+        setErrorCode(null);
+      })
+      .catch((caught: unknown) => {
+        if (cancelled || !mounted.current) return;
+        setError(caught instanceof Error ? caught.message : 'Request failed');
+        setErrorCode(caught instanceof ApiRequestError ? caught.code : 'REQUEST_FAILED');
+      })
+      .finally(() => {
+        if (!cancelled && mounted.current) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, version, options.enabled]);
+
+  const reload = useCallback(() => setVersion((value) => value + 1), []);
+  return { data, error, errorCode, loading, reload };
+}
+
+export function useAction(): {
+  busy: boolean;
+  run: <T>(
+    fn: () => Promise<T>,
+    onSuccess?: (result: T) => void,
+    onError?: (message: string) => void,
+  ) => Promise<void>;
+} {
+  const [busy, setBusy] = useState(false);
+  const run = useCallback(
+    async <T>(
+      fn: () => Promise<T>,
+      onSuccess?: (result: T) => void,
+      onError?: (message: string) => void,
+    ) => {
+      setBusy(true);
+      try {
+        const result = await fn();
+        onSuccess?.(result);
+      } catch (error) {
+        const message =
+          error instanceof ApiRequestError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : 'Request failed';
+        onError?.(message);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+  return { busy, run };
+}

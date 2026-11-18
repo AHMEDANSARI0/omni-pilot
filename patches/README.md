@@ -1,0 +1,50 @@
+# Patch files (`phaseN.mjs`)
+
+From now on every change to this project is delivered as a single self-applying Node script instead of a git
+push. Workflow:
+
+```bash
+# put phaseN.mjs in the project root (next to package.json)
+node phase1.mjs
+```
+
+The script prints every file it touched and fails loudly (exit code 1) if something does not match, so a
+half-applied upgrade is never silently reported as success.
+
+## Rules each phase file follows
+
+- **Idempotent** — running it twice does nothing the second time (`already applied` message, exit 0).
+- **Path-anchored** — resolves files relative to its own location, so it works from any `cwd`.
+- **Backup first** — writes `*.pre-phaseN.bak` next to each file it modifies.
+- **Verified** — after patching it re-reads each file and asserts the new content is present.
+- **No silent skips** — if an anchor string is missing, it stops with the file name, the expected snippet and a
+  short hint, instead of ignoring the file.
+- **Chained checks** — optional flags:
+
+  ```bash
+  node phase2.mjs --dry-run   # show what would change, touch nothing
+  node phase2.mjs --check     # run typecheck + tests at the end
+  ```
+
+## Applying a phase safely
+
+```bash
+git status --short           # make sure your tree is clean (optional but recommended)
+node phase3.mjs --dry-run    # inspect
+node phase3.mjs              # apply
+npm run typecheck && npm test
+```
+
+If anything goes wrong, restore the `.bak` files the script left behind (or `git checkout -- .`).
+
+## Phase log
+
+| File          | Summary                                                                                                                                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| —             | Baseline: full system delivered as `linkedin-ai-automation.zip` (v1.0.0). No phase files yet.                                                                                             |
+| `phase1.mjs`  | Professional portal redesign (indigo/violet, sidebar + topbar, mobile bottom nav, dashboard cards, charts).                                                                               |
+| `phase1b.mjs` | Smoothness polish: optimistic approve/reject, silent refresh (`lib/hooks.ts`), `npm run doctor`.                                                                                          |
+| `phase2.mjs`  | WhatsApp approvals via the official Cloud API (wa.me code link, signed webhook, free service window, dashboard card). Requires `phase1b.mjs`.                                             |
+| `phase3.mjs`  | UI layer split out into `ui/` (tokens, primitives, layout, icon registry) + glassmorphism redesign + `npm run check:ui`. Deletes `components/ui`, `components/layout`, `app/globals.css`. |
+| `phase4.mjs`  | Three draft options per run (one AI request), `post_variants` table + `0004` migration, compare-and-pick on `/posts`, prune after 24 h. Requires `phase3.mjs`.                            |
+| `phase5.mjs`  | Next: AI topic suggestions into the sheet (see `docs/ROADMAP.md`).                                                                                                                        |

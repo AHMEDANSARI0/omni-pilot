@@ -1,0 +1,152 @@
+# Architecture
+
+## Shape of the system
+
+One Cloudflare Worker, one Postgres database, no microservices.
+
+```
+┌──────────────────────────── Cloudflare Worker ────────────────────────────┐
+│  fetch  /api/v1/*  ──►  Hono app  ──►  middleware (services, auth, limits) │
+│         other paths ─►  static assets from ./out (Next.js export)         │
+│  scheduled (cron */5) ─►  automation tick                                 │
+└───────────────┬──────────────────────────────────────────────────────────┘
+                │ ports (interfaces)
+     ┌──────────┼─────────────┬──────────────┬───────────────┐
+     ▼          ▼             ▼              ▼               ▼
+ Supabase    Gemini       Google Sheets   Resend        LinkedIn
+ PostgREST   (AiProvider)  (SheetsGateway) (EmailGateway) (LinkedInGateway)
+```
+
+Layers, from the inside out:
+
+| Layer          | Location                  | Rules                                                                                                    |
+| -------------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Domain types   | `src/core/types.ts`       | Plain data, no I/O                                                                                       |
+| Ports          | `src/core/ports.ts`       | `Database`, `AiProvider`, `SheetsGateway`, `EmailGateway`, `LinkedInGateway`, `Cipher`, `Clock`          |
+| Business logic | `src/core/*.ts`           | Pure orchestration over ports: generation, approval, publishing, scheduler, formatting, scheduling maths |
+| Adapters       | `src/adapters/**`         | One file per external system; all fetch-based (Workers friendly)                                         |
+| Composition    | `src/server/services.ts`  | Builds adapters from config once per request; swaps in local stubs for dev                               |
+| Transport      | `src/worker/**`           | Hono routes, auth, rate limiting, response envelope                                                      |
+| UI             | `app/**`, `components/**` | Static Next.js dashboard, talks only to `/api/v1`                                                        |
+
+Nothing in `src/core` imports an adapter, and nothing in the UI imports anything from `src/core` except types —
+business logic cannot leak into components, and the transport layer cannot be bypassed.
+
+## Data flow of one day
+
+1. **Cron tick** (`*/5`) → `runAutomationTick`.
+2. `generationDue(settings, now)` computes in the owner timezone whether today is a publishing day and whether
+   the generation time has passed.
+3. `claim_generation_day(date)` — an atomic `UPDATE … WHERE` that allows one successful run per local date and
+   at most 3 attempts, and holds a 15-minute lock. Concurrent ticks cannot both win.
+4. `syncTopicsFromSheet` reads the sheet, parses rows (`parseSheetValues`), and inserts eligible topics with
+   `ON CONFLICT (topic_date, topic) DO NOTHING`.
+5. `claim_daily_topic(date)` — `FOR UPDATE SKIP LOCKED`, marks the topic `claimed`, increments attempts.
+6. AI draft → `validateDraft` → compose final text (hook + body + hashtags) → `insert into generated_posts`
+   (`run_date` is `UNIQUE`, so a race fails safely with a conflict).
+7. Sheet is updated (`STATUS=Generated`, draft, hashtags, `APPROVAL=Pending`, publish time) — a failure is logged
+   and reported, never fatal.
+8. Approval row is created with a random 256-bit token; only `HMAC-SHA256(token, APPROVAL_TOKEN_SECRET)` is
+   stored; expiry = now + `approval_ttl_hours`.
+9. Resend sends the email with the full post and links to `/approve/?token=…`.
+10. **Approval** → `POST /api/v1/public/approvals/:token/decision` → `consume_approval` (atomic, single use,
+    expiry-checked) → post `approved` → publishing job created with `run_at = max(now, today's publish time)`.
+11. **Cron tick** (or immediate publish if the time has passed) → `claim_publishing_jobs` → `publishPost` →
+    `claim_post_for_publish` (approved→publishing, one winner) → LinkedIn `/rest/posts` → post id + URL saved to
+    `generated_posts`, `publishing_jobs` and the sheet.
+
+## State machines
+
+**Topic**: `pending → claimed → generated → skipped` (failure paths: `claimed → failed → pending` on retry).
+
+**Post**: `pending_approval → approved → publishing → published`; `pending_approval → rejected`;
+`pending_approval → expired` (no response before the token expiry); `publishing → approved` (retryable failure) or
+`publishing → failed` (terminal). Only `approved` can enter `publishing`, and `published` is terminal.
+
+**Publishing job**: `queued → processing → published`; `processing → queued` (retry with backoff);
+`processing → failed` (attempts exhausted); `processing → manual_required` (LinkedIn unavailable);
+`queued → canceled` (post rejected).
+
+## Idempotency and duplicate prevention
+
+| Risk                                       | Guard                                                                                                      |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Two cron ticks generate the same day       | `claim_generation_day` (DB conditional update) + `UNIQUE (run_date)` on `generated_posts`                  |
+| Sheet row imported twice                   | `UNIQUE (topic_date, topic)` + `ON CONFLICT DO NOTHING`                                                    |
+| Two workers pick the same topic            | `FOR UPDATE SKIP LOCKED` in `claim_daily_topic`                                                            |
+| Approval link replayed / double tap        | `consume_approval` conditional update (single use, expiry checked)                                         |
+| Two workers publish one post               | `claim_post_for_publish` (approved→publishing) + `UNIQUE (post_id)` on jobs + published-timestamp re-check |
+| Worker dies mid-publish                    | `locked_until` + `recover_stuck_jobs` returns posts to `approved` only when `published_at IS NULL`         |
+| Two OAuth callbacks replay a state         | `oauth_states` rows are deleted on first read                                                              |
+| Duplicate topics within one sheet snapshot | de-duplicated in `syncTopicsFromSheet` before insert                                                       |
+
+## Error handling
+
+- Every adapter throws `AppError` with a stable `code`, an HTTP status and `retryable`.
+- Transport errors are retried with exponential backoff inside the adapter (Gemini 429/5xx, Resend 429/5xx,
+  Google 401 refresh once, LinkedIn mapped by status).
+- Business layer converts failures into explicit outcomes: `failed`, `retry_scheduled`, `manual_required`,
+  `no_topic`, `duplicate`. Nothing is silently marked complete.
+- Failure notifications are emails; if email itself is broken the failure is logged and surfaced in the dashboard.
+- `execution_logs` records every meaningful transition with redacted context (`redact()` strips bearer tokens,
+  API keys and `client_secret` values).
+
+## Security model
+
+| Asset                           | Protection                                                                                                      |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Dashboard access                | Supabase Auth JWT validated server-side; `OWNER_EMAIL` allowlist; 401/403 otherwise                             |
+| Supabase service key            | Worker secret only; never in the bundle                                                                         |
+| OAuth tokens (Google, LinkedIn) | AES-256-GCM with `TOKEN_ENCRYPTION_KEY`; decrypted only inside the Worker                                       |
+| Approval links                  | 256-bit random token, HMAC stored, single use, TTL, POST-only action                                            |
+| Cron endpoint                   | `CRON_SECRET` compared in constant time                                                                         |
+| Database exposure               | RLS enabled, `anon`/`authenticated` revoked; PostgREST used only with the service role                          |
+| Browser bundle                  | No secrets; no database SDK; no `NEXT_PUBLIC_*` credentials                                                     |
+| Input                           | zod schemas on every mutating endpoint                                                                          |
+| Abuse                           | Per-isolate rate limiting on `/api/v1`, `/auth/*`, and the public approval endpoints                            |
+| Dev bypass                      | `ALLOW_DEV_BYPASS` throws at config load if `APP_ENV=production`; runtime also refuses a local DB in production |
+
+## Extending it later (without a rewrite)
+
+- **Another AI provider**: implement `AiProvider`, register in `src/server/services.ts`, set `AI_PROVIDER`.
+- **Another social platform**: implement a `PublishTarget` port alongside `LinkedInGateway`; jobs already carry
+  per-post state.
+- **Multiple workspaces**: `app_settings`, `scheduler_state` are singletons; adding `workspace_id` to the tables
+  and scoping the repository methods is the intended path.
+- **OmniFlow or another app**: the versioned `/api/v1` surface with a uniform envelope and an OpenAPI document is
+  the integration point; add an API-key middleware when a second consumer exists.
+
+## Folder structure
+
+```
+app/                       Next.js routes (static export)
+  (dashboard)/             authenticated shell: overview, queue, posts, approvals, history, settings
+  approve/                 public email-approval page
+  signin/                  Supabase sign-in
+components/                dashboard components + shadcn-style ui primitives
+lib/                       client API wrapper, session storage, hooks, DTO types
+src/core/                  domain types, ports, generation, approval, publishing, scheduler, format, prompt, emails
+src/adapters/              db (postgrest, memory), ai (gemini, local), sheets, services (resend, local), linkedin, storage (cipher)
+src/server/services.ts     composition root
+src/worker/                Hono app, routes, middleware, http helpers
+src/dev/node.ts            local server (API + static dashboard + optional dev cron)
+supabase/migrations/       schema + atomic functions
+tests/                     vitest suites (102 tests)
+scripts/                   verify-db, run-cron
+docs/                      setup, architecture, API, limitations
+```
+
+## Presentation layer (`ui/`)
+
+The dashboard is split in two on purpose:
+
+- `ui/` — **pure design system**: `tokens.css` (the only file with colours), `primitives.tsx`,
+  `layout.tsx`, `icons.tsx`, `nav.ts`. It imports React, `next/link`, `lucide-react`, `clsx` and
+  `tailwind-merge` — nothing else. No data, no API, no auth.
+- `components/` + `app/` — **application layer**: data fetching (`lib/hooks`), API calls (`lib/api`),
+  page composition. `components/app-shell.tsx` is the single join point: it fetches the summary and
+  passes finished props into `Shell` from `@/ui/shell`.
+
+Two entry points keep bundles small: `@/ui` (primitives + icons, used by pages) and `@/ui/shell`
+(layout + nav, used only by the app shell). `npm run check:ui` and `tests/ui-separation.test.ts`
+enforce the boundary, so the design can be replaced without touching product logic.

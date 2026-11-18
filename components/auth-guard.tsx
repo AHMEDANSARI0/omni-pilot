@@ -1,0 +1,78 @@
+'use client';
+
+import * as React from 'react';
+import { useRouter } from 'next/navigation';
+import { fetchAuthMode } from '@/lib/api';
+import { getSession, type AuthMode } from '@/lib/session';
+import { Alert, Skeleton } from '@/ui';
+
+const AuthModeContext = React.createContext<AuthMode | null>(null);
+
+export function useAuthMode(): AuthMode | null {
+  return React.useContext(AuthModeContext);
+}
+
+export function AuthGuard({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const [state, setState] = React.useState<'checking' | 'ready' | 'unauthenticated' | 'error'>(
+    'checking',
+  );
+  const [mode, setMode] = React.useState<AuthMode | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const authMode = await fetchAuthMode();
+        if (cancelled) return;
+        setMode(authMode);
+        if (!authMode.requiresAuth || getSession()) {
+          setState('ready');
+          return;
+        }
+        setState('unauthenticated');
+        router.replace('/signin/');
+      } catch (caught) {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : 'Cannot reach the API');
+        setState('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  if (state === 'checking') {
+    return (
+      <div className="space-y-3 p-4">
+        <Skeleton className="h-8 w-40" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
+
+  if (state === 'error') {
+    return (
+      <div className="p-4">
+        <Alert tone="error" title="Cannot reach the automation API">
+          {error}. Check that the Worker is deployed and that APP_BASE_URL is correct.
+        </Alert>
+      </div>
+    );
+  }
+
+  if (state === 'unauthenticated') {
+    return (
+      <div className="p-4">
+        <Alert tone="info" title="Sign in required">
+          Redirecting to the sign-in page…
+        </Alert>
+      </div>
+    );
+  }
+
+  return <AuthModeContext.Provider value={mode}>{children}</AuthModeContext.Provider>;
+}

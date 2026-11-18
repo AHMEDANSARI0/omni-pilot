@@ -1,0 +1,210 @@
+'use client';
+
+import * as React from 'react';
+import type { ActivityPointDto } from '@/lib/types';
+import { Card, CardContent, CardHeader, CardTitle, Segmented, theme } from '@/ui';
+
+type Range = '7' | '30' | '90';
+
+const VIEW_W = 640;
+const VIEW_H = 200;
+const TOP_PAD = 10;
+const BOTTOM_PAD = 6;
+
+function niceCeil(value: number): number {
+  if (value <= 4) return 4;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(value)));
+  const normalized = value / magnitude;
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return step * magnitude;
+}
+
+function smoothPath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) return '';
+  const first = points[0]!;
+  if (points.length === 1) return `M ${first.x} ${first.y}`;
+  let path = `M ${first.x} ${first.y}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const p0 = points[Math.max(0, index - 1)]!;
+    const p1 = points[index]!;
+    const p2 = points[index + 1]!;
+    const p3 = points[Math.min(points.length - 1, index + 2)]!;
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    path += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+  return path;
+}
+
+function labelFor(date: string, range: Range): string {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (range === '7') {
+    return new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'UTC' }).format(parsed);
+  }
+  if (range === '90') {
+    return new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(parsed);
+  }
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  }).format(parsed);
+}
+
+export function ActivityChart({ series }: { series: ActivityPointDto[] }) {
+  const [range, setRange] = React.useState<Range>('30');
+  const points = React.useMemo(() => series.slice(-Number(range)), [series, range]);
+
+  const totals = React.useMemo(
+    () =>
+      points.reduce(
+        (accumulator, point) => ({
+          generated: accumulator.generated + point.generated,
+          published: accumulator.published + point.published,
+        }),
+        { generated: 0, published: 0 },
+      ),
+    [points],
+  );
+
+  const max = Math.max(1, ...points.map((point) => Math.max(point.generated, point.published)));
+  const ceiling = niceCeil(max);
+  const usableHeight = VIEW_H - TOP_PAD - BOTTOM_PAD;
+
+  const coordinates = (key: 'generated' | 'published') =>
+    points.map((point, index) => ({
+      x: points.length <= 1 ? VIEW_W / 2 : (index / (points.length - 1)) * VIEW_W,
+      y: TOP_PAD + usableHeight - (point[key] / ceiling) * usableHeight,
+    }));
+
+  const generatedLine = smoothPath(coordinates('generated'));
+  const publishedLine = smoothPath(coordinates('published'));
+  const areaPath =
+    generatedLine && points.length > 1
+      ? `${generatedLine} L ${VIEW_W} ${VIEW_H - BOTTOM_PAD} L 0 ${VIEW_H - BOTTOM_PAD} Z`
+      : '';
+
+  const labelIndices = React.useMemo(() => {
+    if (points.length <= 7) return points.map((_, index) => index);
+    const count = range === '30' ? 5 : 4;
+    const step = Math.max(1, Math.round((points.length - 1) / (count - 1)));
+    const indices: number[] = [];
+    for (let index = 0; index < points.length; index += step) indices.push(index);
+    if (!indices.includes(points.length - 1)) indices.push(points.length - 1);
+    return indices;
+  }, [points, range]);
+
+  const isEmpty = totals.generated === 0 && totals.published === 0;
+
+  return (
+    <Card className="h-full">
+      <CardHeader className="flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <CardTitle>Publishing activity</CardTitle>
+          <p className="mt-0.5 text-[12px] text-muted-foreground">
+            Generated drafts vs published posts
+          </p>
+        </div>
+        <Segmented
+          ariaLabel="Activity range"
+          value={range}
+          onChange={setRange}
+          options={[
+            { value: '7', label: '7d' },
+            { value: '30', label: '30d' },
+            { value: '90', label: '90d' },
+          ]}
+        />
+      </CardHeader>
+
+      <CardContent className="pt-4">
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
+          <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-primary" />
+            {totals.generated} generated
+          </span>
+          <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-warm-strong" />
+            {totals.published} published
+          </span>
+        </div>
+
+        {isEmpty ? (
+          <div className="flex h-[180px] items-center justify-center rounded-2xl border border-dashed border-white/80 bg-white/40 backdrop-blur-sm text-[12.5px] text-muted-foreground">
+            No activity in this range yet.
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <div className="flex flex-col justify-between py-0.5 text-right text-[10px] tabular text-muted-foreground">
+              {[ceiling, Math.round((ceiling * 2) / 3), Math.round(ceiling / 3), 0].map((value) => (
+                <span key={value}>{value}</span>
+              ))}
+            </div>
+            <div className="min-w-0 flex-1">
+              <svg
+                viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+                preserveAspectRatio="none"
+                className="h-[180px] w-full sm:h-[200px]"
+                role="img"
+                aria-label={`Generated and published posts for the last ${range} days`}
+              >
+                <defs>
+                  <linearGradient id="activity-fill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={theme.colors.mint} stopOpacity="0.16" />
+                    <stop offset="100%" stopColor={theme.colors.mint} stopOpacity="0" />
+                  </linearGradient>
+                </defs>
+
+                {[0, 1, 2, 3].map((line) => {
+                  const y = TOP_PAD + (usableHeight / 3) * line;
+                  return (
+                    <line
+                      key={line}
+                      x1={0}
+                      x2={VIEW_W}
+                      y1={y}
+                      y2={y}
+                      stroke={theme.colors.grid}
+                      strokeWidth="1"
+                      vectorEffect="non-scaling-stroke"
+                      strokeDasharray={line === 3 ? undefined : '3 4'}
+                    />
+                  );
+                })}
+
+                {areaPath ? <path d={areaPath} fill="url(#activity-fill)" /> : null}
+
+                <path
+                  d={publishedLine}
+                  fill="none"
+                  stroke={theme.colors.peach}
+                  strokeWidth="1.75"
+                  strokeDasharray="4 4"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <path
+                  d={generatedLine}
+                  fill="none"
+                  stroke={theme.colors.ink}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+
+              <div className="mt-1.5 flex justify-between text-[10px] text-muted-foreground">
+                {labelIndices.map((index) => {
+                  const point = points[index];
+                  return point ? <span key={point.date}>{labelFor(point.date, range)}</span> : null;
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

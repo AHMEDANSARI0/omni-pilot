@@ -1,0 +1,209 @@
+import { Hono } from 'hono';
+import { AppError } from '@/src/core/errors';
+import { validateDraft, splitPostText, countChars } from '@/src/core/format';
+import { generateDailyPost } from '@/src/core/generation';
+import { syncTopicsFromSheet } from '@/src/core/sync';
+import { createLogger } from '@/src/core/logger';
+import { POST_STATUSES, type PostStatus, type TopicStatus } from '@/src/core/types';
+import { created, fail, notFound, ok } from '../http';
+import {
+  generateSchema,
+  parseOrThrow,
+  postPatchSchema,
+  postsQuerySchema,
+  topicCreateSchema,
+  topicPatchSchema,
+} from '../schemas';
+import type { AppEnv } from '../types';
+
+export const contentRoutes = new Hono<AppEnv>();
+
+contentRoutes.get('/topics', async (c) => {
+  const services = c.get('services');
+  const statusParam = c.req.query('status');
+  const statuses = statusParam
+    ? (statusParam.split(',').filter(Boolean) as TopicStatus[])
+    : undefined;
+  const topics = await services.db.listTopics({
+    statuses,
+    from: c.req.query('from'),
+    to: c.req.query('to'),
+    limit: Number(c.req.query('limit') ?? 200),
+  });
+  return ok(c, { topics });
+});
+
+contentRoutes.post('/topics', async (c) => {
+  const services = c.get('services');
+  const body = parseOrThrow(topicCreateSchema, await c.req.json().catch(() => ({})));
+  try {
+    const topic = await services.db.createTopic({
+      sheetRowNumber: null,
+      topicDate: body.topicDate,
+      topic: body.topic,
+      contentType: body.contentType,
+      keyPoints: body.keyPoints ?? null,
+      targetAudience: body.targetAudience ?? null,
+    });
+    await createLogger(services.db, { actor: c.get('actor') }).info(
+      'topic.created',
+      'Topic created',
+      {
+        topicId: topic.id,
+        topicDate: topic.topicDate,
+      },
+    );
+    return created(c, { topic });
+  } catch (error) {
+    return fail(c, error);
+  }
+});
+
+contentRoutes.patch('/topics/:id', async (c) => {
+  const services = c.get('services');
+  const body = parseOrThrow(topicPatchSchema, await c.req.json().catch(() => ({})));
+  const topic = await services.db.updateTopic(c.req.param('id'), {
+    status: body.status,
+    lastError: null,
+  });
+  return ok(c, { topic });
+});
+
+contentRoutes.get('/posts', async (c) => {
+  const services = c.get('services');
+  const query = parseOrThrow(postsQuerySchema, {
+    status: c.req.query('status') ?? undefined,
+    from: c.req.query('from') ?? undefined,
+    to: c.req.query('to') ?? undefined,
+    limit: c.req.query('limit') ?? undefined,
+    offset: c.req.query('offset') ?? undefined,
+  });
+  const statuses = query.status
+    ? (query.status
+        .split(',')
+        .filter((value) => POST_STATUSES.includes(value as PostStatus)) as PostStatus[])
+    : undefined;
+  const posts = await services.db.listPosts({
+    statuses,
+    from: query.from,
+    to: query.to,
+    limit: query.limit,
+    offset: query.offset,
+  });
+  return ok(c, { posts });
+});
+
+contentRoutes.get('/posts/:id', async (c) => {
+  const services = c.get('services');
+  const post = await services.db.getPost(c.req.param('id'));
+  if (!post) return fail(c, notFound('Post not found'));
+  const [topic, approval, job] = await Promise.all([
+    post.topicId ? services.db.getTopic(post.topicId) : Promise.resolve(null),
+    services.db.getActiveApprovalForPost(post.id),
+    services.db.getJobByPost(post.id),
+  ]);
+  return ok(c, { post, topic, approval, job });
+});
+
+contentRoutes.patch('/posts/:id', async (c) => {
+  const services = c.get('services');
+  const postId = c.req.param('id');
+  const body = parseOrThrow(postPatchSchema, await c.req.json().catch(() => ({})));
+  const post = await services.db.getPost(postId);
+  if (!post) return fail(c, notFound('Post not found'));
+  if (['published', 'publishing'].includes(post.status)) {
+    return fail(c, new AppError('CONFLICT', 'Published or in-flight posts cannot be edited.'));
+  }
+
+  const settings = await services.db.getSettings();
+  const split = splitPostText(body.fullText);
+  const validated = validateDraft(split, {
+    maxChars: settings.maxPostChars,
+    hashtagMin: settings.hashtagMin,
+    hashtagMax: settings.hashtagMax,
+  });
+  if (countChars(validated.fullText) > settings.maxPostChars) {
+    return fail(
+      c,
+      new AppError('VALIDATION_FAILED', `Post exceeds ${settings.maxPostChars} characters.`),
+    );
+  }
+
+  const updated = await services.db.updatePost(postId, {
+    hook: validated.hook,
+    body: validated.body,
+    hashtags: validated.hashtags,
+    fullText: validated.fullText,
+    charCount: validated.charCount,
+    editedByOwner: true,
+  });
+  await createLogger(services.db, { actor: c.get('actor') }).info(
+    'post.edited',
+    'Post edited by owner',
+    {
+      postId,
+      charCount: updated.charCount,
+    },
+  );
+  return ok(c, { post: updated, issues: validated.issues });
+});
+
+contentRoutes.post('/sync', async (c) => {
+  const services = c.get('services');
+  const log = createLogger(services.db, { actor: c.get('actor') });
+  try {
+    const result = await syncTopicsFromSheet(services, log);
+    return ok(c, result);
+  } catch (error) {
+    return fail(c, error);
+  }
+});
+
+contentRoutes.post('/generate', async (c) => {
+  const services = c.get('services');
+  const body = parseOrThrow(generateSchema, await c.req.json().catch(() => ({})));
+  const result = await generateDailyPost(services, {
+    runDate: body.runDate,
+    sendEmail: body.sendEmail,
+    skipSync: body.skipSync,
+    trigger: c.get('actor'),
+  });
+  return ok(c, { result });
+});
+
+contentRoutes.get('/stats', async (c) => {
+  const services = c.get('services');
+  const [total, pending, published, failed, rejected, approved, expired] = await Promise.all([
+    services.db.countPosts(),
+    services.db.countPosts(['pending_approval']),
+    services.db.countPosts(['published']),
+    services.db.countPosts(['failed']),
+    services.db.countPosts(['rejected']),
+    services.db.countPosts(['approved']),
+    services.db.countPosts(['expired']),
+  ]);
+  return ok(c, {
+    total,
+    pendingApprovals: pending,
+    published,
+    failed,
+    rejected,
+    approved,
+    expired,
+  });
+});
+
+contentRoutes.post('/topics/:id/retry', async (c) => {
+  const services = c.get('services');
+  const topic = await services.db.getTopic(c.req.param('id'));
+  if (!topic) return fail(c, notFound('Topic not found'));
+  const updated = await services.db.updateTopic(topic.id, { status: 'pending', lastError: null });
+  await createLogger(services.db, { actor: c.get('actor') }).info(
+    'topic.reset',
+    'Topic reset to pending',
+    {
+      topicId: topic.id,
+    },
+  );
+  return ok(c, { topic: updated });
+});

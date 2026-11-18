@@ -1,0 +1,96 @@
+'use client';
+
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import {
+  CalendarClock,
+  CheckCircle2,
+  FileText,
+  History,
+  LayoutDashboard,
+  Settings as SettingsIcon,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useAuthMode } from './auth-guard';
+
+const NAV = [
+  { href: '/', label: 'Overview', icon: LayoutDashboard },
+  { href: '/queue/', label: 'Queue', icon: CalendarClock },
+  { href: '/posts/', label: 'Posts', icon: FileText },
+  { href: '/approvals/', label: 'Approve', icon: CheckCircle2 },
+  { href: '/history/', label: 'History', icon: History },
+  { href: '/settings/', label: 'Settings', icon: SettingsIcon },
+] as const;
+
+function titleFor(pathname: string): string {
+  const match = NAV.find((item) => item.href === pathname);
+  if (match) return match.label;
+  const nested = NAV.find((item) => item.href !== '/' && pathname.startsWith(item.href));
+  return nested?.label ?? 'Dashboard';
+}
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const mode = useAuthMode();
+
+  return (
+    <div className="mx-auto flex min-h-screen w-full max-w-2xl flex-col">
+      <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0">
+            <p className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              LinkedIn Automation
+            </p>
+            <h1 className="truncate text-base font-semibold leading-tight">{titleFor(pathname)}</h1>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {mode?.devBypass ? (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                Dev
+              </span>
+            ) : null}
+            {mode?.servicesMode === 'local' ? (
+              <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-700">
+                Local
+              </span>
+            ) : (
+              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">
+                Live
+              </span>
+            )}
+          </div>
+        </div>
+        {mode?.servicesMode === 'local' && !mode.devBypass ? (
+          <div className="border-t border-amber-200 bg-amber-50 px-4 py-1.5 text-[11px] text-amber-900">
+            Local dev mode: AI, email, Sheets and LinkedIn are stubbed. Nothing is really published.
+          </div>
+        ) : null}
+      </header>
+
+      <main className="flex-1 px-4 pb-24 pt-3">{children}</main>
+
+      <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/95 backdrop-blur">
+        <div className="mx-auto grid max-w-2xl grid-cols-6">
+          {NAV.map((item) => {
+            const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-current={active ? 'page' : undefined}
+                className={cn(
+                  'flex min-h-[56px] flex-col items-center justify-center gap-0.5 px-0.5 py-2 text-[10px] font-medium transition-colors',
+                  active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <Icon className={cn('h-5 w-5', active && 'stroke-[2.4]')} aria-hidden />
+                <span className="truncate">{item.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
+    </div>
+  );
+}

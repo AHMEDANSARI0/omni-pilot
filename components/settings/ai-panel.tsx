@@ -1,0 +1,170 @@
+'use client';
+
+import * as React from 'react';
+import { api } from '@/lib/api';
+import { useAction } from '@/lib/hooks';
+import type { SettingsDto } from '@/lib/types';
+import {
+  Alert,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Field,
+  Input,
+  Textarea,
+} from '@/ui';
+import { useToast } from '../toast';
+
+const MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+];
+
+export function AiPanel({ settings, onSaved }: { settings: SettingsDto; onSaved: () => void }) {
+  const [form, setForm] = React.useState(settings);
+  const { busy, run } = useAction();
+  const { toast } = useToast();
+  const [testResult, setTestResult] = React.useState<string | null>(null);
+
+  const save = () =>
+    run(
+      () =>
+        api.patch<{ settings: SettingsDto }>('/settings', {
+          aiModel: form.aiModel,
+          brandVoice: form.brandVoice,
+          writingInstructions: form.writingInstructions,
+          hashtagMin: Number(form.hashtagMin),
+          hashtagMax: Number(form.hashtagMax),
+          maxPostChars: Number(form.maxPostChars),
+        }),
+      () => {
+        toast('AI settings saved.', 'success');
+        onSaved();
+      },
+      (message) => toast(message, 'error'),
+    );
+
+  const test = () =>
+    run(
+      () =>
+        api.post<{ ok: boolean; message: string; sample?: string }>('/integrations/gemini/test'),
+      (result) => {
+        setTestResult(
+          result.sample ? `${result.message}\nSample hook: ${result.sample}` : result.message,
+        );
+        toast(
+          result.ok ? 'AI provider responded.' : result.message,
+          result.ok ? 'success' : 'error',
+        );
+      },
+      (message) => toast(message, 'error'),
+    );
+
+  return (
+    <div className="space-y-3">
+      <Card>
+        <CardHeader>
+          <CardTitle>Model</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Field
+            label="Gemini model"
+            htmlFor="model"
+            hint="Free-tier models only. The provider adapter is swappable."
+          >
+            <Input
+              id="model"
+              list="model-options"
+              value={form.aiModel}
+              onChange={(event) => setForm({ ...form, aiModel: event.target.value })}
+            />
+            <datalist id="model-options">
+              {MODELS.map((model) => (
+                <option key={model} value={model} />
+              ))}
+            </datalist>
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Min hashtags" htmlFor="min-tags">
+              <Input
+                id="min-tags"
+                type="number"
+                min={1}
+                max={10}
+                value={form.hashtagMin}
+                onChange={(event) => setForm({ ...form, hashtagMin: Number(event.target.value) })}
+              />
+            </Field>
+            <Field label="Max hashtags" htmlFor="max-tags">
+              <Input
+                id="max-tags"
+                type="number"
+                min={1}
+                max={10}
+                value={form.hashtagMax}
+                onChange={(event) => setForm({ ...form, hashtagMax: Number(event.target.value) })}
+              />
+            </Field>
+          </div>
+          <Field label="Maximum characters" htmlFor="max-chars" hint="LinkedIn hard limit is 3000.">
+            <Input
+              id="max-chars"
+              type="number"
+              min={300}
+              max={3000}
+              value={form.maxPostChars}
+              onChange={(event) => setForm({ ...form, maxPostChars: Number(event.target.value) })}
+            />
+          </Field>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Brand voice</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Field label="Who is writing?" htmlFor="brand-voice">
+            <Textarea
+              id="brand-voice"
+              rows={4}
+              value={form.brandVoice}
+              onChange={(event) => setForm({ ...form, brandVoice: event.target.value })}
+            />
+          </Field>
+          <Field
+            label="Writing rules"
+            htmlFor="writing-rules"
+            hint="Style guardrails sent with every generation request. Keep the anti-fabrication rules."
+          >
+            <Textarea
+              id="writing-rules"
+              rows={12}
+              value={form.writingInstructions}
+              onChange={(event) => setForm({ ...form, writingInstructions: event.target.value })}
+            />
+          </Field>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Button loading={busy} onClick={save}>
+          Save AI settings
+        </Button>
+        <Button variant="outline" loading={busy} onClick={test}>
+          Test provider
+        </Button>
+      </div>
+
+      {testResult ? (
+        <Alert tone="info" title="Provider test">
+          <span className="whitespace-pre-wrap">{testResult}</span>
+        </Alert>
+      ) : null}
+    </div>
+  );
+}

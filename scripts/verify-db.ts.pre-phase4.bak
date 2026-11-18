@@ -1,0 +1,119 @@
+/**
+ * Verify a real Supabase project against the expected schema and RPC functions.
+ *
+ *   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run db:verify
+ *
+ * Read-only except for the scheduler/approval housekeeping functions, which are safe to
+ * call at any time. Run this once after applying the migrations.
+ */
+import { PostgrestDatabase } from '@/src/adapters/db/postgrest';
+import { PostgrestClient } from '@/src/adapters/db/postgrest';
+
+const TABLES = [
+  'app_settings',
+  'content_topics',
+  'generated_posts',
+  'approval_requests',
+  'publishing_jobs',
+  'integrations',
+  'oauth_states',
+  'execution_logs',
+  'scheduler_state',
+  'whatsapp_approval_codes',
+  'whatsapp_messages',
+] as const;
+
+const RPCS = [
+  'claim_daily_topic',
+  'claim_publishing_jobs',
+  'consume_approval',
+  'expire_stale_approvals',
+  'claim_generation_day',
+  'claim_post_for_publish',
+  'recover_stuck_jobs',
+  'prune_whatsapp_artifacts',
+] as const;
+
+async function main(): Promise<void> {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    console.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.');
+    process.exit(1);
+  }
+
+  const client = new PostgrestClient({ url, serviceRoleKey: key });
+  const db = new PostgrestDatabase(client);
+  const failures: string[] = [];
+
+  console.log(`Checking Supabase project ${url}\n`);
+
+  for (const table of TABLES) {
+    try {
+      await client.select(table, { select: '*', limit: '1' });
+      console.log(`  ok   table ${table}`);
+    } catch (error) {
+      failures.push(`table ${table}: ${(error as Error).message}`);
+      console.log(`  FAIL table ${table}`);
+    }
+  }
+
+  console.log('');
+  for (const fn of RPCS) {
+    try {
+      switch (fn) {
+        case 'claim_daily_topic':
+          await client.rpc(fn, { p_date: '1990-01-01', p_max_attempts: 1 });
+          break;
+        case 'claim_publishing_jobs':
+          await client.rpc(fn, { p_limit: 1 });
+          break;
+        case 'consume_approval':
+          await client.rpc(fn, { p_token_hash: 'verify-only', p_action: 'approve' });
+          break;
+        case 'claim_generation_day':
+          // Read-only probe: uses a date in the past that will never be claimed again.
+          await client.rpc(fn, { p_date: '1990-01-01', p_max_attempts: 0 });
+          break;
+        case 'claim_post_for_publish':
+          await client.rpc(fn, { p_post_id: '00000000-0000-0000-0000-000000000000' });
+          break;
+        default:
+          await client.rpc(fn, {});
+      }
+      console.log(`  ok   rpc   ${fn}`);
+    } catch (error) {
+      failures.push(`rpc ${fn}: ${(error as Error).message}`);
+      console.log(`  FAIL rpc   ${fn}`);
+    }
+  }
+
+  console.log('');
+  try {
+    const settings = await db.getSettings();
+    console.log(`  ok   settings singleton (timezone ${settings.ownerTimezone})`);
+  } catch (error) {
+    failures.push(`settings: ${(error as Error).message}`);
+  }
+  try {
+    const state = await db.getSchedulerState();
+    console.log(`  ok   scheduler state (last generation: ${state.lastGenerationDate ?? 'never'})`);
+  } catch (error) {
+    failures.push(`scheduler_state: ${(error as Error).message}`);
+  }
+
+  console.log('');
+  if (failures.length > 0) {
+    console.error(`Verification failed with ${failures.length} problem(s):`);
+    for (const failure of failures) console.error(`  - ${failure}`);
+    process.exit(1);
+  }
+  console.log(
+    'Database verification passed. Apply 0001_schema.sql and 0002_functions.sql if anything was missing.',
+  );
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

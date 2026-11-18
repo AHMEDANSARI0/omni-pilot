@@ -1,0 +1,40 @@
+import type { AiProvider, GeneratePostInput } from '@/src/core/ports';
+import type { DraftContent } from '@/src/core/types';
+
+/**
+ * Deterministic offline provider for local development and tests.
+ * It is clearly labelled in the UI/logs (provider "local-dev") and is impossible to
+ * select when APP_ENV=production.
+ */
+export class LocalAiProvider implements AiProvider {
+  readonly id = 'local-dev';
+  readonly model = 'local-dev-template';
+
+  async generatePost(input: GeneratePostInput): Promise<DraftContent> {
+    const keyPoint = input.keyPoints?.split(/\n|;/)[0]?.trim();
+    const hook = `Most agent workflows fail on the boring part: ${lowerFirst(input.topic)}.`;
+
+    const body = [
+      keyPoint
+        ? `Here is the part that mattered in practice: ${keyPoint}`
+        : `The interesting failure was never the model call. It was everything wrapped around it: retries, state, and knowing what actually happened.`,
+      `In the first version every step called the model directly. It worked in demos and fell apart the moment one call timed out, because there was no record of what had already run.`,
+      `The fix was unglamorous. Each step became an idempotent function with a stored key, the orchestration layer recorded status before and after, and failures returned a typed reason instead of a stack trace. Debugging went from guesswork to reading a log.`,
+      `If you are building ${lowerFirst(input.topic)}, design the failure path before the happy path. The happy path is the easy half.`,
+    ].join('\n\n');
+
+    return {
+      hook,
+      body,
+      hashtags: [
+        'AIAutomation',
+        'AgenticAI',
+        input.contentType === 'how-to' ? 'HowTo' : 'Engineering',
+      ],
+    };
+  }
+}
+
+function lowerFirst(value: string): string {
+  return value.charAt(0).toLowerCase() + value.slice(1);
+}
