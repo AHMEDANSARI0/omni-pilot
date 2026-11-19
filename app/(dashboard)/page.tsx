@@ -1,8 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { api } from '@/lib/api';
-import { useAction, useApi } from '@/lib/hooks';
+import { useApi } from '@/lib/hooks';
 import type { OverviewDto } from '@/lib/types';
 import {
   Alert,
@@ -29,22 +28,9 @@ import {
 } from '@/components/dashboard-cards';
 import { ActivityChart } from '@/components/charts/activity-chart';
 import { ActivityFeed } from '@/components/activity-feed';
-import { useToast } from '@/components/toast';
 
 export default function OverviewPage() {
-  const { data, error, loading, reload } = useApi<OverviewDto>('/overview');
-  const { busy, run } = useAction();
-  const { toast } = useToast();
-
-  const runNow = () =>
-    run(
-      () => api.post<{ generation: { reason: string } }>('/schedule/run', { force: true }),
-      (result) => {
-        toast(`Run complete: ${result.generation.reason}`, 'success');
-        reload();
-      },
-      (message) => toast(message, 'error'),
-    );
+  const { data, error, loading } = useApi<OverviewDto>('/overview');
 
   if (loading && !data) {
     return (
@@ -72,8 +58,17 @@ export default function OverviewPage() {
 
   if (!data) return null;
 
-  const { stats, schedule, integrations, latestPosts, recentLogs, series, trend, upcomingTopics } =
-    data;
+  const {
+    stats,
+    schedule,
+    integrations,
+    latestPosts,
+    recentLogs,
+    series,
+    trend,
+    approvalLag,
+    upcomingTopics,
+  } = data;
   const timeZone = schedule.settings.ownerTimezone;
 
   const nextSlotLabel = schedule.nextSlot?.generationAt
@@ -111,13 +106,13 @@ export default function OverviewPage() {
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             <Link href="/approvals/">
-              <Button size="sm" className="gap-1.5">
+              <Button size="sm" className="h-11 gap-1.5 sm:h-9">
                 <IconApprovals className="h-4 w-4" aria-hidden />
                 Review approvals
               </Button>
             </Link>
             <Link href="/queue/?new=1">
-              <Button size="sm" variant="outline" className="gap-1.5">
+              <Button size="sm" variant="outline" className="h-11 gap-1.5 sm:h-9">
                 <IconAdd className="h-4 w-4" aria-hidden />
                 Add topic
               </Button>
@@ -176,7 +171,7 @@ export default function OverviewPage() {
           </p>
           <Link
             href="/approvals/"
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/70 bg-white/70 px-3 py-1.5 text-[12px] font-medium text-foreground shadow-sm transition-colors hover:bg-white"
+            className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full border border-white/70 bg-white/70 px-3.5 text-[12px] font-medium text-foreground shadow-sm transition-colors hover:bg-white sm:min-h-0 sm:py-1.5"
           >
             Review
             <IconNext className="h-3.5 w-3.5" aria-hidden />
@@ -186,7 +181,7 @@ export default function OverviewPage() {
 
       <div className="grid gap-4 lg:grid-cols-3 lg:gap-5">
         <div className="lg:col-span-2">
-          <ActivityChart series={series} />
+          <ActivityChart series={series} approvalLag={approvalLag} />
         </div>
         <ScheduleCard
           nextRunAt={schedule.nextSlot?.generationAt ?? null}
@@ -196,9 +191,14 @@ export default function OverviewPage() {
           lastRunAt={schedule.schedulerState.lastGenerationAt}
           lastRunStatus={schedule.schedulerState.lastGenerationStatus}
           action={
-            <Button className="w-full" size="sm" loading={busy} onClick={runNow}>
-              Run pipeline now
-            </Button>
+            /* Navigation only: the overview stays read-only, so the mutation hook never
+               loads on the first paint (Phase 6 budget). Running the pipeline lives on
+               the queue page, where actions belong. */
+            <Link href="/queue/" className="block">
+              <Button className="h-11 w-full sm:h-9" size="sm">
+                Open content queue
+              </Button>
+            </Link>
           }
         />
       </div>
@@ -209,7 +209,7 @@ export default function OverviewPage() {
             action={
               <Link
                 href="/posts/"
-                className="text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
+                className="flex min-h-[44px] items-center px-1 text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
               >
                 All posts
               </Link>
@@ -246,7 +246,7 @@ export default function OverviewPage() {
                 <h3 className="text-[15px] font-semibold tracking-tight">Upcoming topics</h3>
                 <Link
                   href="/queue/"
-                  className="text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
+                  className="flex min-h-[44px] items-center px-1 text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
                 >
                   Queue
                 </Link>
@@ -276,7 +276,7 @@ export default function OverviewPage() {
           action={
             <Link
               href="/settings/?tab=integrations"
-              className="text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
+              className="flex min-h-[44px] items-center px-1 text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
             >
               Manage
             </Link>

@@ -3,7 +3,7 @@ import { buildApprovalEmail, buildDecisionReceiptEmail } from './emails';
 import { createLogger } from './logger';
 import { sendOwnerEmail } from './notify';
 import { cancelQueuedJob, publishPost, type PublishStatus } from './publishing';
-import { publishRunAt } from './schedule';
+import { publishRunAt, slotOfPost } from './schedule';
 import { approvalSheetUpdate, safeSheetUpdate } from './sync';
 import { addHours, isoInstant } from './time';
 import { generateApprovalToken, hashApprovalToken, isApprovalTokenFormatValid } from './tokens';
@@ -256,6 +256,7 @@ export async function decideApproval(
       note: input.note ?? null,
     });
     await sendReceipt(services, log, 'approve', approvedPost, publish.status, publish.url);
+    await emitDecisionEvent(services, 'approve', approvedPost);
 
     return { action: 'approve', post: approvedPost, approval: consumed, publish, sheetUpdated };
   }
@@ -285,6 +286,7 @@ export async function decideApproval(
     note: input.note ?? null,
   });
   await sendReceipt(services, log, 'reject', rejectedPost, 'rejected', null);
+  await emitDecisionEvent(services, 'reject', rejectedPost);
 
   return {
     action: 'reject',
@@ -353,6 +355,30 @@ export async function resendApprovalEmail(
     },
   );
   return { sent: result.sent, error: result.error, expiresAt };
+}
+
+/**
+ * Phase 10: OmniFlow hears about an approval decision. Fire-and-forget - a webhook endpoint being down
+ * must not turn an approval into an error, and the delivery is retried by the cron tick.
+ */
+async function emitDecisionEvent(
+  services: Services,
+  action: 'approve' | 'reject',
+  post: Post,
+): Promise<void> {
+  try {
+    const { emitWebhookEvent } = await import('./omni');
+    const { webhookDispatcherFor } = await import('./omni-dispatch');
+    await emitWebhookEvent(webhookDispatcherFor(services), {
+      event: action === 'approve' ? 'post.approved' : 'post.rejected',
+      eventId: `${post.id}:post.${action === 'approve' ? 'approved' : 'rejected'}`,
+      data: { postId: post.id, runDate: post.runDate, slotIndex: post.slotIndex },
+      baseUrl: services.config.baseUrl,
+      now: services.clock.now(),
+    });
+  } catch {
+    // Nothing to add: the dispatcher logs its own failures when it attempts the delivery.
+  }
 }
 
 async function sendReceipt(

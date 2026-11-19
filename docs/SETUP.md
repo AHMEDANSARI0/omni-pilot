@@ -26,15 +26,30 @@ Resend or the LinkedIn self-serve API. **YouTube/laptop-free**: the scheduler ru
    - CLI: `supabase link --project-ref <ref> && supabase db push`, or
    - Dashboard → SQL Editor → paste and run, in order: `0001_schema.sql`, `0002_functions.sql`,
      `0003_whatsapp.sql` (optional WhatsApp channel), `0004_post_variants.sql`.
-3. Verify from your machine:
+3. Verify from your machine — two commands, both quick:
 
    ```bash
+   # a) do the objects exist?
    SUPABASE_URL=https://<ref>.supabase.co \
    SUPABASE_SERVICE_ROLE_KEY=<service-role-key> \
    npm run db:verify
+
+   # b) does the real adapter behave correctly against them? (32 assertions)
+   SUPABASE_URL=https://<ref>.supabase.co \
+   SUPABASE_SERVICE_ROLE_KEY=<service-role-key> \
+   npm run db:contract
    ```
 
-   Expected: every table and RPC prints `ok`, and the singleton settings/scheduler rows exist.
+   `db:verify` reads only. `db:contract` drives the actual `PostgrestDatabase` methods and checks the
+   behaviour the app depends on: single-use approvals, the generation-day claim, one post per day,
+   locked jobs, idempotent WhatsApp ids. It uses fixtures on `2038-04-05/06` and deletes them again,
+   so it is safe on a database that already has your content.
+
+   Expected: `Database verification passed.` and `Contract check passed (32 assertions).`
+
+   **No Supabase account yet?** `docker compose -f docker/compose.local.yml up -d` then
+   `npm run db:local` runs the same migrations plus both checks against local Postgres 17 +
+   PostgREST — the exact stack Supabase runs. See `docs/DATABASE.md`.
 
 4. Create the owner user: **Authentication → Users → Add user** with the email you will use as `OWNER_EMAIL`
    and a strong password (email confirmation can stay disabled since only you use it).
@@ -144,6 +159,34 @@ Setup:
 **If the products cannot be enabled** (for example the portal refuses a personal app), the system is still fully
 usable: approved posts go through the manual fallback — the email and dashboard show the exact text plus a
 LinkedIn composer link, and you record the published URL so history stays accurate. No fake success.
+
+---
+
+## 6b. Web push (optional, free)
+
+Approval emails already work; push is the "tell my phone" channel on top of them. It is optional and
+honestly degraded when unconfigured: without keys the API reports `configured: false`, the dashboard does
+not show the button, and nothing claims to have sent anything.
+
+1. Generate a VAPID key pair once (any machine, Node 18+):
+
+   ```bash
+   node -e "const c=require('crypto');const k=c.generateKeyPairSync('ec',{namedCurve:'prime256v1'});
+   const pub=k.publicKey.export({format:'der',type:'spki'}).subarray(26);
+   const priv=k.privateKey.export({format:'der',type:'pkcs8'}).subarray(36);
+   console.log('VAPID_PUBLIC_KEY=' + Buffer.from(pub).toString('base64url'));
+   console.log('VAPID_PRIVATE_KEY=' + Buffer.from(priv).toString('base64url'));"
+   ```
+
+2. Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (`mailto:you@example.com`).
+   Never regenerate these while devices are subscribed - the keys identify the app to the push service, and
+   every existing subscription becomes invalid.
+3. Deploy, then open **Settings → Account → Enable notifications** on the phone (the app must be installed or
+   at least served over HTTPS; `localhost` counts as secure).
+4. Send a test from the same card. Only three events push: draft ready, publish failed, approval expiring.
+
+Push needs the `push_subscriptions` table from `0005_slots_and_api.sql`. iOS requires 16.4+ and the app to be
+added to the Home Screen - Safari in a tab cannot subscribe, and the UI says so instead of offering a button.
 
 ---
 

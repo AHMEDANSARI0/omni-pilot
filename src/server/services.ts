@@ -1,7 +1,7 @@
 import { loadConfig, type AppConfig, type EnvSource } from '@/src/config/env';
 import { AppError } from '@/src/core/errors';
 import { createLogger } from '@/src/core/logger';
-import { systemClock, type Services } from '@/src/core/services';
+import { systemClock, type Services, type WebhookSender } from '@/src/core/services';
 import type {
   AiProvider,
   Cipher,
@@ -133,6 +133,19 @@ export async function createServices(
   linkedin =
     overrides.linkedin ?? local?.linkedin ?? new LinkedInGatewayImpl({ db, cipher, config });
   const whatsapp = overrides.whatsapp ?? createWhatsApp(config);
+  // One place that knows how to make an HTTP POST for a webhook: fetch in the Worker, the same call in
+  // Node, and a five-line stub in tests.
+  const webhookSender: WebhookSender = async (url, init) => {
+    const response = await fetch(url, {
+      method: init.method,
+      headers: init.headers,
+      body: init.body,
+      // A webhook must not hang a cron tick.
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = await response.text().catch(() => '');
+    return { status: response.status, body };
+  };
 
   return {
     config,
@@ -145,6 +158,7 @@ export async function createServices(
     cipher,
     clock,
     logger: createLogger(db),
+    webhookSender,
   };
 }
 

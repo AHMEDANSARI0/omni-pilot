@@ -24,6 +24,55 @@ export class LocalAiProvider implements AiProvider {
     }));
   }
 
+  /**
+   * Deterministic offline suggestions so the Phase 6 UI works with no API key.
+   * Clearly themed around the local provider's subject matter, and never presented as live AI.
+   */
+  async suggestTopics(
+    _input: { systemInstruction: string; prompt: string },
+    count: number,
+  ): Promise<string> {
+    const ideas = [
+      {
+        topic: 'Why every agent tool call needs an idempotency key',
+        angle: 'Failure story',
+        keyPoints: 'A retried tool call created duplicate records\nThe fix was a stored key per call\nRetries now resume instead of repeating',
+        audience: 'engineers building agent pipelines',
+        contentType: 'story',
+      },
+      {
+        topic: 'A short how-to for typed failures in agent workflows',
+        angle: 'Short how-to',
+        keyPoints: 'Every step returns a typed reason, not a stack trace\nThe orchestrator decides retry vs fail\nLogs become readable',
+        audience: 'backend engineers',
+        contentType: 'how-to',
+      },
+      {
+        topic: 'The trade-off between retries and duplicate side effects',
+        angle: 'Trade-off',
+        keyPoints: 'Retries hide failures until they duplicate them\nIdempotency costs one write per step\nThat write pays for itself on the first timeout',
+        audience: 'automation leads',
+        contentType: 'opinion',
+      },
+      {
+        topic: 'What I would change about my first scheduler design',
+        angle: 'What I would change',
+        keyPoints: 'Time zones were an afterthought\nDatabase claims beat in-memory locks\nFailures needed to be visible, not logged quietly',
+        audience: 'engineers writing cron jobs',
+        contentType: 'insight',
+      },
+      {
+        topic: 'Cost control for a free-tier AI pipeline',
+        angle: 'Field note',
+        keyPoints: 'One request per run instead of one per variant\nHard limits in code, not in a dashboard\nFailures stop the run instead of retrying forever',
+        audience: 'solo builders on free tiers',
+        contentType: 'insight',
+      },
+    ];
+    const total = Math.min(Math.max(count, 1), ideas.length);
+    return JSON.stringify({ suggestions: ideas.slice(0, total) });
+  }
+
   private draft(input: GeneratePostInput, index: number): DraftContent {
     const topic = lowerFirst(input.topic);
     const keyPoint = input.keyPoints?.split(/\n|;/)[0]?.trim();

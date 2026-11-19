@@ -19,15 +19,18 @@ import { SchedulePanel } from '@/components/settings/schedule-panel';
 import { AiPanel } from '@/components/settings/ai-panel';
 import { IntegrationsPanel } from '@/components/settings/integrations-panel';
 import { LogsPanel } from '@/components/settings/logs-panel';
+import { ApiPanel } from '@/components/settings/api-panel';
+import { PwaBridge } from '@/components/pwa-bridge';
 import { useAuthMode } from '@/components/auth-guard';
 import { useToast } from '@/components/toast';
 
-type Tab = 'schedule' | 'ai' | 'integrations' | 'logs' | 'account';
+type Tab = 'schedule' | 'ai' | 'integrations' | 'api' | 'logs' | 'account';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'schedule', label: 'Schedule' },
   { id: 'ai', label: 'AI voice' },
   { id: 'integrations', label: 'Integrations' },
+  { id: 'api', label: 'API' },
   { id: 'logs', label: 'Logs' },
   { id: 'account', label: 'Account' },
 ];
@@ -87,7 +90,7 @@ export default function SettingsPage() {
               type="button"
               aria-current={tab === item.id ? 'true' : undefined}
               onClick={() => setTab(item.id)}
-              className={`h-8 whitespace-nowrap rounded-lg border px-3 text-[12.5px] font-medium transition-colors ${
+              className={`h-11 min-h-11 whitespace-nowrap rounded-lg border px-3 text-[12.5px] font-medium transition-colors md:h-8 md:min-h-0 ${
                 tab === item.id
                   ? 'border-transparent bg-primary text-primary-foreground shadow-sm'
                   : 'border-border bg-card text-muted-foreground hover:text-foreground'
@@ -102,9 +105,13 @@ export default function SettingsPage() {
       {tab === 'schedule' ? <SchedulePanel settings={data.settings} onSaved={reload} /> : null}
       {tab === 'ai' ? <AiPanel settings={data.settings} onSaved={reload} /> : null}
       {tab === 'integrations' ? <IntegrationsPanel timeZone={timeZone} /> : null}
+      {tab === 'api' ? <ApiPanel /> : null}
       {tab === 'logs' ? <LogsPanel timeZone={timeZone} /> : null}
       {tab === 'account' ? (
         <div className="space-y-3">
+          {/* Phase 10: registering the service worker is what makes the app installable, so it
+              happens on a page the owner actually visits rather than invisibly at startup. */}
+          <PwaBridge />
           <Card>
             <CardHeader>
               <CardTitle>Account</CardTitle>

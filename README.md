@@ -77,7 +77,7 @@ tokens switch the post to the **manual fallback** (full text + LinkedIn composer
 with URL validation). Nothing is ever marked published unless LinkedIn returned a post id.
 
 **Design system (`ui/`)** — the interface is a separate layer: `ui/tokens.css` holds every colour, radius,
-blur and gradient; `ui/primitives.tsx` the components; `ui/layout.tsx` the shell; `ui/icons.tsx` every icon
+blur and gradient; `ui/primitives.tsx` the components; `ui/shell/` the frame; `ui/icons.tsx` every icon
 (named by meaning). No page contains a raw colour or imports an icon library, and `npm run check:ui` fails the
 build if one sneaks in — so the look can be replaced from one folder. Current look: glassmorphism on a
 cream/mint/peach mesh, frosted white surfaces, near-black pill actions. See [docs/UI.md](docs/UI.md).
@@ -86,6 +86,12 @@ cream/mint/peach mesh, frosted white surfaces, near-black pill actions. See [doc
 (angles like _failure story_, _short how-to_, _trade-off_). The `/posts` page compares them side by
 side; "Use this" rewrites the post, so the approval email, the queue and the sheet keep working. The
 rest are pruned 24 h later. One API call, so the free tier quota is spent once.
+
+**Responsive shell** — the sidebar is pinned to the window's left edge at full height and collapses from
+264 px to a 72 px icon rail (tooltip, active bar, badge dot, remembered in `localStorage`, `[` toggles it).
+Below 1024 px the same navigation becomes a drawer (backdrop tap, Escape, focus trap, scroll lock) while the
+bottom tab bar stays. Verified in Chromium at 320–1920 px: zero horizontal overflow, ≥44 px touch targets.
+See [docs/UI.md](docs/UI.md).
 
 **Dashboard** — mobile-first, bottom navigation, thumb-sized controls, no horizontal overflow: Overview,
 Content Queue, Generated Posts, Pending Approvals, Publishing History, Google Sheets + LinkedIn connections,
@@ -99,7 +105,7 @@ CSP-friendly static assets; `ALLOW_DEV_BYPASS` is rejected in production by the 
 
 ```bash
 npm install
-cp .env.example .env.local        # then set the three generated secrets (see below)
+node scripts/init-env.mjs you@gmail.com    # writes .env.local with generated secrets
 npm run build                     # builds the static dashboard into ./out
 npm run dev:api                   # API + dashboard on http://localhost:8787
 ```
@@ -219,7 +225,7 @@ Copy it to `.github/workflows/ci.yml` to enable it (this workspace's GitHub App 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layers, state machines, idempotency, security model
 - [docs/API.md](docs/API.md) — all `/api/v1` endpoints, [openapi.yaml](docs/openapi.yaml)
 - [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — free-tier limits, LinkedIn API facts, verified vs unverified
-- [docs/ROADMAP.md](docs/ROADMAP.md) — phase backlog (3 draft variants next)
+- [docs/ROADMAP.md](docs/ROADMAP.md) — phase backlog (calendar + charts + AI suggestions next)
 - [docs/UI.md](docs/UI.md) — the `ui/` design system: how to re-theme, icons, guardrails
 - [docs/WHATSAPP.md](docs/WHATSAPP.md) — WhatsApp Cloud API approval setup + how it works (replaces Telegram)
 - [docs/sample-content-plan.csv](docs/sample-content-plan.csv) — starter sheet
@@ -247,3 +253,17 @@ Copy it to `.github/workflows/ci.yml` to enable it (this workspace's GitHub App 
 
 From then on the Worker generates, emails, waits for your approval and publishes at your publish time — with
 no laptop, browser or local process involved.
+### One command
+
+```bash
+npm run check     # typecheck + UI guard + coverage gate + e2e, in that order
+npm test          # 221 unit/contract tests
+npm run coverage  # src/core coverage gate: 85% lines/functions, 75% branches
+npm run e2e       # Playwright: whole chain + safety guards + 8 pages x 9 widths
+npm run typecheck # strict TypeScript, 0 errors
+npm run build     # Next static export, 12 routes
+```
+
+The end-to-end chain (topic -> generate -> approve -> publish), the two safety guards and the responsive
+contract live in `e2e/`. See [docs/TESTING.md](./docs/TESTING.md) for what each layer proves, how to
+re-run it, and what is deliberately left out.

@@ -92,16 +92,16 @@ export default function PostsPage() {
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="IconSearch hook, body, hashtag or date"
-            aria-label="IconSearch posts"
-            className="h-10 pl-9"
+            placeholder="Search hook, body, hashtag or date"
+            aria-label="Search posts"
+            className="h-11 pl-9 sm:h-10"
           />
         </div>
         <div className="flex gap-2">
           <Button
             size="sm"
             variant="outline"
-            className="h-10 flex-1 sm:flex-none"
+            className="h-11 flex-1 sm:h-9 sm:flex-none"
             loading={busy}
             onClick={generateNow}
           >
@@ -110,7 +110,7 @@ export default function PostsPage() {
           <Button
             size="icon"
             variant="outline"
-            className="h-10 w-10 shrink-0"
+            className="h-11 w-11 shrink-0 sm:h-9 sm:w-9"
             aria-label="Refresh posts"
             onClick={reload}
             loading={loading}
@@ -120,7 +120,7 @@ export default function PostsPage() {
         </div>
       </div>
 
-      <div className="-mx-4 overflow-x-auto px-4 no-scrollbar">
+      <div className="no-scrollbar -mx-3 overflow-x-auto px-3 sm:-mx-4 sm:px-4 lg:-mx-6 lg:px-6">
         <div className="flex w-max gap-1.5">
           {FILTERS.map((filter) => (
             <button
@@ -128,7 +128,7 @@ export default function PostsPage() {
               type="button"
               onClick={() => setStatus(filter.value)}
               className={cn(
-                'h-8 whitespace-nowrap rounded-lg border px-3 text-[12.5px] font-medium transition-colors',
+                'h-11 shrink-0 whitespace-nowrap rounded-full border px-3.5 text-[12.5px] font-medium transition-colors sm:h-9',
                 status === filter.value
                   ? 'border-transparent bg-primary text-primary-foreground shadow-sm'
                   : 'border-border bg-card text-muted-foreground hover:text-foreground',
@@ -210,13 +210,13 @@ export default function PostsPage() {
                   <p className="text-[12px] font-medium text-primary">{post.hashtags.join(' ')}</p>
                 ) : null}
 
-                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
                   <span>
                     {post.charCount} chars · {post.model || post.provider}
                   </span>
                   <button
                     type="button"
-                    className="font-medium text-primary"
+                    className="-my-1 flex min-h-[44px] items-center px-1 font-medium text-primary"
                     onClick={() =>
                       setExpanded((current) => ({ ...current, [post.id]: !isExpanded }))
                     }
@@ -230,7 +230,7 @@ export default function PostsPage() {
                     href={post.publishedUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block truncate text-[12px] text-primary underline-offset-2 hover:underline"
+                    className="flex h-11 items-center truncate text-[12px] text-primary underline-offset-2 hover:underline sm:h-auto sm:block"
                   >
                     {post.publishedUrl}
                   </a>

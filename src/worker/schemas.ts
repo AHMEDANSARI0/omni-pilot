@@ -10,6 +10,8 @@ export const settingsPatchSchema = z
     ownerTimezone: z.string().min(1).refine(isValidTimeZone, 'Unknown IANA timezone'),
     generationTime: timeSchema,
     publishTime: timeSchema,
+    // Phase 10: every slot of the day, in order. One entry = the old single-post behaviour.
+    publishTimes: z.array(timeSchema).min(1).max(5),
     publishDays: z.array(z.number().int().min(1).max(7)).min(1).max(7),
     respectPublishTime: z.boolean(),
     autoPublishOnApproval: z.boolean(),
@@ -30,14 +32,49 @@ export const topicCreateSchema = z
     topicDate: isoDateSchema,
     topic: z.string().min(5).max(300),
     contentType: z.enum(CONTENT_TYPES).default('insight'),
+    /** Phase 10: which post of the day this topic feeds. Omitted means the first slot. */
+    slotIndex: z.number().int().min(0).max(4).optional(),
     keyPoints: z.string().max(4000).nullish(),
     targetAudience: z.string().max(500).nullish(),
+    /**
+     * Phase 7: `true` keeps the topic even when it repeats recent work. Without it the request is
+     * refused with the match, so a duplicate can never enter the queue by accident - only on purpose.
+     */
+    allowDuplicate: z.boolean().optional(),
   })
   .strict();
 
 export const topicPatchSchema = z
   .object({
     status: z.enum(['pending', 'skipped']),
+  })
+  .strict();
+
+/** Phase 6: ask for a week of topic ideas (nothing is stored). */
+export const suggestionSchema = z
+  .object({
+    count: z.number().int().min(1).max(7).optional(),
+    startDate: isoDateSchema.optional(),
+  })
+  .strict();
+
+/** Phase 6: add the suggestions the owner kept. Dates already taken are refused, not replaced. */
+export const suggestionAcceptSchema = z
+  .object({
+    topics: z
+      .array(
+        z
+          .object({
+            topicDate: isoDateSchema,
+            topic: z.string().min(5).max(300),
+            contentType: z.enum(CONTENT_TYPES).default('insight'),
+            keyPoints: z.string().max(4000).nullish(),
+            targetAudience: z.string().max(500).nullish(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(7),
   })
   .strict();
 
@@ -50,6 +87,8 @@ export const postPatchSchema = z
 export const generateSchema = z
   .object({
     runDate: isoDateSchema.optional(),
+    /** Phase 10: which post of the day. Omitted means the first slot, i.e. the old behaviour. */
+    slotIndex: z.number().int().min(0).max(4).optional(),
     sendEmail: z.boolean().optional(),
     skipSync: z.boolean().optional(),
   })

@@ -1,0 +1,51 @@
+# Local Postgres + PostgREST, matching what Supabase runs.
+#
+#   docker compose -f docker/compose.local.yml up -d      # start
+#   npm run db:local                                      # apply migrations + contract check
+#   docker compose -f docker/compose.local.yml down -v    # stop and wipe
+#
+# Requires Docker Desktop (Windows/Mac) or docker + compose (Linux). Nothing here is used in
+# production; a real deploy still points at a Supabase project.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postpilot
+    ports:
+      - '54322:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d postpilot']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postpilot-db:/var/lib/postgresql/data
+      # Applied once, on an empty volume. Re-run `npm run db:local` after editing a migration.
+      - ../supabase/migrations:/docker-entrypoint-initdb.d:ro
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://postgres:postgres@db:5432/postpilot
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+      PGRST_DB_USE_LEGACY_GUCS: 'false'
+
+  # The dashboard/Worker speaks the Supabase dialect: <url>/rest/v1/<table>. This gateway gives
+  # the local PostgREST the same shape, so no product code needs a local-only branch.
+  gateway:
+    image: nginx:1.27-alpine
+    depends_on:
+      - rest
+    ports:
+      - '54321:54321'
+    volumes:
+      - ./nginx/rest.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  postpilot-db:

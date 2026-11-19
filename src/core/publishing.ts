@@ -167,6 +167,13 @@ export async function publishPost(
     const settings = await services.db.getSettings();
     await sendOwnerEmail(services, log, buildPublishedEmail(updatedPost, result.url, settings));
 
+    await emitPostEvent(services, 'post.published', postId, {
+      postId,
+      runDate: updatedPost.runDate,
+      slotIndex: updatedPost.slotIndex,
+      publishedUrl: result.url,
+    });
+
     return {
       status: 'published',
       postId,
@@ -226,6 +233,12 @@ export async function publishPost(
     await log.error('publish.failed', `Publishing failed permanently: ${reason}`, {
       attempts: job.attempts,
     });
+    await emitPostEvent(services, 'post.failed', postId, {
+      postId,
+      runDate: post.runDate,
+      reason,
+    });
+    await pushEvent(services, 'post.failed', { runDate: post.runDate, reason });
     const settings = await services.db.getSettings();
     await notifyFailure(services, log, {
       runDate: post.runDate,
@@ -390,5 +403,50 @@ export async function cancelQueuedJob(services: Services, postId: string): Promi
       lockedUntil: null,
       lastError: 'Post was rejected',
     });
+  }
+}
+
+/**
+ * Phase 10: tells OmniFlow that something happened.
+ *
+ * Fire-and-forget by design: an unreachable webhook endpoint must never turn a successful publish into
+ * an error the owner sees, and the delivery itself is retried by the cron tick.
+ */
+/**
+ * Phase 10: the same three moments that get a webhook also get a push notification, for the owner's
+ * phone. Fire-and-forget and unconfigured-safe: an owner without VAPID keys is not an error.
+ */
+async function pushEvent(
+  services: Services,
+  event: 'post.ready' | 'post.failed',
+  data: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const { broadcastPushEvent } = await import('./push-send');
+    await broadcastPushEvent(services, event, data);
+  } catch {
+    // A notification that cannot be sent must never fail the publish that triggered it.
+  }
+}
+
+async function emitPostEvent(
+  services: Services,
+  event: 'post.published' | 'post.failed' | 'post.generated' | 'post.approved' | 'post.rejected',
+  postId: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const { emitWebhookEvent } = await import('./omni');
+    const { webhookDispatcherFor } = await import('./omni-dispatch');
+    await emitWebhookEvent(webhookDispatcherFor(services), {
+      event,
+      // One delivery per post per event: a retried publish cannot notify twice.
+      eventId: `${postId}:${event}`,
+      data,
+      baseUrl: services.config.baseUrl,
+      now: services.clock.now(),
+    });
+  } catch {
+    // Logged by the dispatcher when the delivery is attempted; nothing to add here.
   }
 }

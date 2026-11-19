@@ -141,8 +141,23 @@ docs/                      setup, architecture, API, limitations
 The dashboard is split in two on purpose:
 
 - `ui/` — **pure design system**: `tokens.css` (the only file with colours), `primitives.tsx`,
-  `layout.tsx`, `icons.tsx`, `nav.ts`. It imports React, `next/link`, `lucide-react`, `clsx` and
-  `tailwind-merge` — nothing else. No data, no API, no auth.
+  `decision-group.tsx`, `icons.tsx`, `nav.ts` and `shell/` (the frame split into `shell.tsx`,
+  `sidebar.tsx`, `topbar.tsx`, `drawer.tsx`, `sidebar-state.ts`). It imports React, `next/link`,
+  `lucide-react`, `clsx` and `tailwind-merge` — nothing else. No data, no API, no auth.
+
+### Shell layout contract (what it guarantees)
+
+| Surface            | Rule                                                                                                                              |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Sidebar rail (lg+) | `position: fixed`, `left: 0`, `top: 0`, `height: 100dvh`, width `var(--sidebar-w)` (264 px, 72 px when collapsed)                 |
+| Content area       | `padding-left: var(--sidebar-w)`, full width — the shell itself is never centred                                                  |
+| Reading column     | `max-width: var(--content-max)` (1180 px) on `<main>` only                                                                        |
+| < lg               | `--sidebar-w: 0px`; the same navigation renders in a drawer (backdrop, Esc, focus trap, scroll lock) and the bottom tab bar stays |
+| Collapse state     | `<html data-sidebar="expanded                                                                                                     | collapsed">`+`localStorage('postpilot.sidebar')`; pure CSS layout swap, no JS measurement |
+
+Because the width tokens are shared, the rail, the drawer and the content padding can never disagree —
+which is what made the old `max-w-[1400px] mx-auto` shell drift away from the left edge on wide screens.
+
 - `components/` + `app/` — **application layer**: data fetching (`lib/hooks`), API calls (`lib/api`),
   page composition. `components/app-shell.tsx` is the single join point: it fetches the summary and
   passes finished props into `Shell` from `@/ui/shell`.

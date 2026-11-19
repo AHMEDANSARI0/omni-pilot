@@ -5,6 +5,9 @@ import { fail, ok } from './http';
 import { requireOwner } from './middleware/auth';
 import { rateLimit } from './middleware/rate-limit';
 import { contentRoutes } from './routes/content';
+import { calendarRoutes } from './routes/calendar';
+import { omniAdminRoutes, omniApiRoutes } from './routes/omni';
+import { pushRoutes } from './routes/push';
 import { settingsRoutes } from './routes/settings';
 import { approvalRoutes, publicApprovalRoutes } from './routes/approvals';
 import { publishingRoutes } from './routes/publishing';
@@ -78,9 +81,19 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
   ownerApi.route('/integrations', integrationRoutes);
   ownerApi.route('/whatsapp', whatsappRoutes);
   ownerApi.route('/settings', settingsRoutes);
+  // Key + webhook management is owner-only: a leaked read key must not be able to mint more keys.
+  // Key + webhook management is owner-only: a leaked read key must not be able to mint more keys.
+  ownerApi.route('/calendar', calendarRoutes);
+  ownerApi.route('/omni/admin', omniAdminRoutes);
   ownerApi.route('/logs', logRoutes);
 
   app.route('/api/v1', ownerApi);
+
+  // OmniFlow: a machine API, authenticated by an `opk_` key + scope (never a dashboard session), so it
+  // is mounted on the app and not under ownerApi.
+  app.route('/api/v1/omni', omniApiRoutes);
+  // Web push: the public key is public; subscribe/unsubscribe are the browser's own calls.
+  app.route('/api/v1/push', pushRoutes);
 
   app.notFound((c) => {
     if (new URL(c.req.url).pathname.startsWith('/api/')) {

@@ -85,6 +85,8 @@ export interface SettingsDto {
   ownerTimezone: string;
   generationTime: string;
   publishTime: string;
+  /** Phase 10: every slot of the day. One entry = a single daily post. */
+  publishTimes: string[];
   publishDays: number[];
   respectPublishTime: boolean;
   autoPublishOnApproval: boolean;
@@ -102,6 +104,7 @@ export interface SettingsDto {
 
 export interface ScheduledSlotDto {
   localDate: string;
+  slotIndex: number;
   generationAt: string;
   publishAt: string;
   isGenerationDay: boolean;
@@ -132,11 +135,93 @@ export interface ActivityPointDto {
   date: string;
   generated: number;
   published: number;
+  failed: number;
+}
+
+/** Phase 7 - one hook from the post history, with the outcome that decided its bucket. */
+export interface HookRecordDto {
+  hook: string;
+  outcome: 'published' | 'approved' | 'pending' | 'rejected' | 'failed';
+  runDate: string;
+  pattern: string;
+}
+
+export interface HookLibraryDto {
+  windowStart: string;
+  windowEnd: string;
+  /** Similarity threshold used by duplicate protection, 0..1. */
+  threshold: number;
+  proven: HookRecordDto[];
+  waiting: HookRecordDto[];
+  rejected: HookRecordDto[];
+  patterns: Array<{ pattern: string; count: number }>;
+  summary: string;
+  /** The exact text added to the generation prompt ('' when there is nothing to say). */
+  promptBlock: string;
+}
+
+/** Reply time on approval emails, measured from decision rows (never estimated). */
+export interface ApprovalLagDto {
+  medianHours: number | null;
+  sample: number;
 }
 
 export interface TrendDto {
   current: number;
   previous: number;
+}
+
+export interface SuggestedTopicDto {
+  topicDate: string;
+  topic: string;
+  contentType: string;
+  keyPoints: string;
+  targetAudience: string;
+  rationale: string;
+  duplicateOf: string | null;
+}
+
+export interface SuggestionResultDto {
+  suggestions: SuggestedTopicDto[];
+  skipped: Array<{ topic: string; reason: string }>;
+  windowStart: string;
+  windowEnd: string;
+  provider: string;
+  model: string;
+}
+
+export interface CalendarDayDto {
+  date: string;
+  weekday: number;
+  isPublishingDay: boolean;
+  isToday: boolean;
+  isPast: boolean;
+  kind: 'published' | 'scheduled' | 'failed' | 'pending' | 'open';
+  title: string;
+  postId: string | null;
+  topicId: string | null;
+  publishedUrl: string | null;
+  status: string | null;
+}
+
+export interface CalendarMonthDto {
+  month: string;
+  label: string;
+  today: string;
+  timezone: string;
+  monthStart: string;
+  monthEnd: string;
+  gridStart: string;
+  gridEnd: string;
+  weeks: CalendarDayDto[][];
+  totals: {
+    published: number;
+    scheduled: number;
+    failed: number;
+    pending: number;
+    openPublishingDays: number;
+  };
+  gaps: string[];
 }
 
 export interface SummaryDto {
@@ -173,6 +258,7 @@ export interface OverviewDto {
   recentLogs: LogDto[];
   series: ActivityPointDto[];
   trend: { generated: TrendDto; published: TrendDto };
+  approvalLag: ApprovalLagDto;
   mode: { appEnv: string; servicesMode: string; devBypass: boolean };
 }
 

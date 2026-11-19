@@ -23,6 +23,11 @@ export function buildGenerationPrompt(input: GeneratePostInput): {
     ? input.recentHooks.map((hook) => `- ${hook}`).join('\n')
     : '- (none yet)';
 
+  // Phase 7: the owner's own outcomes, not a model's opinion. Empty string when there is no data,
+  // so the prompt never grows a section that only says "none".
+  const library = (input.hookLibrary ?? '').trim();
+  const libraryBlock = library ? `\n${library}\n` : '';
+
   const prompt = `Write one LinkedIn post.
 
 TOPIC: ${input.topic}
@@ -38,7 +43,7 @@ ${input.writingInstructions}
 
 RECENT HOOKS - do not reuse these openings or structures:
 ${recent}
-
+${libraryBlock}
 REQUIREMENTS:
 - ${input.hashtagMin} to ${input.hashtagMax} hashtags, relevant to the topic, no stuffy generic tags like #Motivation or #Success.
 - Keep hook + body under ${budget} characters.

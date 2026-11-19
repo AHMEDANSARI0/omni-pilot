@@ -61,6 +61,11 @@ export interface Settings {
   hashtagMax: number;
   maxPostChars: number;
   emailNotifications: boolean;
+  /**
+   * Phase 10: wall-clock times of every publishing slot ('10:30', '15:00'). Empty or one entry means the
+   * owner still has a single daily slot, which is what every earlier phase assumed.
+   */
+  publishTimes: string[];
   updatedAt: ISOInstant;
 }
 
@@ -68,6 +73,14 @@ export interface Topic {
   id: string;
   sheetRowNumber: number | null;
   topicDate: ISODate;
+  /**
+   * Phase 10: which post of the day this topic feeds (0-based, 0-4).
+   *
+   * Optional on purpose. Every topic written before this phase was slot 0, and any code that predates
+   * it - a planner, a test fixture, an import - keeps compiling without being touched. Read it through
+   * `slotOfTopic()` rather than directly, so "missing" and "first slot" mean the same thing everywhere.
+   */
+  slotIndex?: number;
   topic: string;
   contentType: string;
   keyPoints: string | null;
@@ -79,15 +92,24 @@ export interface Topic {
   updatedAt: ISOInstant;
 }
 
+/** Optional `slotIndex`: every caller that predates multiple slots writes slot 0. */
 export type NewTopic = Omit<
   Topic,
-  'id' | 'status' | 'attempts' | 'lastError' | 'createdAt' | 'updatedAt'
->;
+  'id' | 'status' | 'attempts' | 'lastError' | 'createdAt' | 'updatedAt' | 'slotIndex'
+> & {
+  slotIndex?: number;
+};
 
 export interface Post {
   id: string;
   topicId: string | null;
   runDate: ISODate;
+  /**
+   * Phase 10: which post of the day (0-4). Optional for the same reason as `Topic.slotIndex`: posts
+   * written before this phase are slot 0, and a fixture that predates it must keep compiling. Read it
+   * through `slotOfPost()`.
+   */
+  slotIndex?: number;
   hook: string;
   body: string;
   hashtags: string[];
@@ -109,6 +131,7 @@ export interface Post {
 export interface NewPost {
   topicId: string | null;
   runDate: ISODate;
+  slotIndex?: number;
   hook: string;
   body: string;
   hashtags: string[];
@@ -232,16 +255,30 @@ export interface FormatResult {
 
 export interface ScheduledSlot {
   localDate: ISODate;
+  /** Which post of the day this is (0-based). Single-slot days only ever use 0. */
+  slotIndex: number;
   generationAt: ISOInstant;
   publishAt: ISOInstant;
   isGenerationDay: boolean;
 }
 
-/** One day of dashboard activity: drafts created and posts published. */
+/** One day's worth of slots, in order. */
+export interface DaySlots {
+  localDate: ISODate;
+  slots: ScheduledSlot[];
+  isGenerationDay: boolean;
+}
+
+/** One day of dashboard activity: drafts created, posts published, drafts that failed. */
 export interface ActivityPoint {
   date: string;
   generated: number;
   published: number;
+  /**
+   * Failures counted per day. Optional because a tree without a failure count still produces these
+   * points; the dashboard chart treats a missing value as zero.
+   */
+  failed?: number;
 }
 
 /** Seven-day comparison used by the overview tiles. */

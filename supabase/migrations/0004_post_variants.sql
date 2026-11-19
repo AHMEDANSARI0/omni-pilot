@@ -26,3 +26,16 @@ create index if not exists post_variants_discarded_idx on public.post_variants (
 
 -- Service-role only, like every other table in this schema.
 alter table public.post_variants enable row level security;
+
+-- Grants must match the base schema: the service role reads and writes, nothing else does.
+-- Without this the table exists but the Worker gets "permission denied for table post_variants".
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    revoke all on public.post_variants from anon, authenticated;
+    grant all on public.post_variants to service_role;
+  end if;
+end;
+$$;
+
+notify pgrst, 'reload schema';

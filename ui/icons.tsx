@@ -2,7 +2,10 @@ import {
   ArrowRight,
   Bell,
   CalendarClock,
+  CalendarDays,
   ChartLine,
+  ChevronLeft,
+  ChevronRight,
   Check,
   CheckCheck,
   CircleAlert,
@@ -32,6 +35,7 @@ import {
   RefreshCw,
   ScrollText,
   Search,
+  Shapes,
   SearchX,
   Send,
   Settings2,
@@ -62,6 +66,9 @@ import {
 export type IconComponent = LucideIcon;
 
 /* brand + navigation */
+export const IconCalendar = CalendarDays;
+export const IconPrevious = ChevronLeft;
+
 export const IconBrand = Sparkles;
 export const IconDashboard = LayoutDashboard;
 export const IconQueue = CalendarClock;
@@ -94,7 +101,10 @@ export const IconExternal = ExternalLink;
 export const IconRefresh = RefreshCw;
 export const IconFilter = Filter;
 export const IconNext = ArrowRight;
+export const IconNextChevron = ChevronRight;
 export const IconMore = ListChecks;
+export const IconHooks = ListChecks;
+export const IconPattern = Shapes;
 
 /* integrations */
 export const IconLinkedin = Linkedin;

@@ -52,6 +52,9 @@ export function SchedulePanel({
   onSaved: () => void;
 }) {
   const [form, setForm] = React.useState(settings);
+  // Phase 10: publish times are a list. One entry is the old behaviour; the second is the whole feature.
+  const times =
+    form.publishTimes && form.publishTimes.length > 0 ? form.publishTimes : [form.publishTime];
   const { busy, run } = useAction();
   const { toast } = useToast();
   const schedule = useApi<ScheduleDto>('/settings/schedule');
@@ -62,7 +65,8 @@ export function SchedulePanel({
         api.patch<{ settings: SettingsDto }>('/settings', {
           ownerTimezone: form.ownerTimezone,
           generationTime: form.generationTime,
-          publishTime: form.publishTime,
+          publishTime: times[0],
+          publishTimes: times,
           publishDays: form.publishDays,
           respectPublishTime: form.respectPublishTime,
           autoPublishOnApproval: form.autoPublishOnApproval,
@@ -115,14 +119,89 @@ export function SchedulePanel({
                 onChange={(event) => setForm({ ...form, generationTime: event.target.value })}
               />
             </Field>
-            <Field label="Publish at" htmlFor="pub-time" hint="Earliest go-live">
+            <Field
+              label={times.length > 1 ? 'Publish at (first post)' : 'Publish at'}
+              htmlFor="pub-time"
+              hint={times.length > 1 ? 'Slot 1 of the day' : 'Earliest go-live'}
+            >
               <Input
                 id="pub-time"
                 type="time"
-                value={form.publishTime}
-                onChange={(event) => setForm({ ...form, publishTime: event.target.value })}
+                value={times[0]}
+                onChange={(event) => {
+                  const next = [event.target.value, ...times.slice(1)];
+                  setForm({ ...form, publishTime: next[0]!, publishTimes: next });
+                }}
               />
             </Field>
+          </div>
+
+          {/* Phase 10: more than one post a day. Each extra slot gets its own draft, approval and publish. */}
+          <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-[13px] font-medium">Posts per day</p>
+                <p className="text-[12px] text-muted-foreground">
+                  {times.length === 1
+                    ? 'One post a day. Add a slot to draft and publish a second post later in the day.'
+                    : `${times.length} posts a day. Each slot gets its own draft and its own approval.`}
+                </p>
+              </div>
+              {times.length < 5 ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-11 shrink-0 sm:h-9"
+                  onClick={() => {
+                    // Default to a slot three hours after the last one, still inside the day.
+                    const last = times[times.length - 1] ?? '10:30';
+                    const [hours, minutes] = last.split(':').map(Number);
+                    const nextHour = Math.min(23, (hours ?? 10) + 3);
+                    const next = `${String(nextHour).padStart(2, '0')}:${String(minutes ?? 0).padStart(2, '0')}`;
+                    setForm({ ...form, publishTimes: [...times, next] });
+                  }}
+                >
+                  Add slot
+                </Button>
+              ) : null}
+            </div>
+
+            {times.length > 1
+              ? times.slice(1).map((time, index) => (
+                  <div key={`slot-${index + 1}`} className="flex items-end gap-2">
+                    <Field
+                      label={`Slot ${index + 2}`}
+                      htmlFor={`pub-time-${index + 1}`}
+                      hint="Its own draft + approval"
+                    >
+                      <Input
+                        id={`pub-time-${index + 1}`}
+                        type="time"
+                        value={time}
+                        onChange={(event) => {
+                          const next = [...times];
+                          next[index + 1] = event.target.value;
+                          setForm({ ...form, publishTimes: next });
+                        }}
+                      />
+                    </Field>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-11 shrink-0 sm:h-9"
+                      aria-label={`Remove slot ${index + 2}`}
+                      onClick={() =>
+                        setForm({
+                          ...form,
+                          publishTimes: times.filter((_, position) => position !== index + 1),
+                        })
+                      }
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))
+              : null}
           </div>
 
           <div className="space-y-1.5">
@@ -135,7 +214,7 @@ export function SchedulePanel({
                     key={day.value}
                     type="button"
                     onClick={() => toggleDay(day.value)}
-                    className={`h-9 w-12 rounded-lg border text-[12px] font-medium ${
+                    className={`h-11 w-12 rounded-lg border text-[12px] font-medium sm:h-9 ${
                       active
                         ? 'border-primary bg-primary text-primary-foreground'
                         : 'border-border bg-card'

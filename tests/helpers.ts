@@ -71,6 +71,9 @@ export class FakeAiProvider implements AiProvider {
     };
   }
 
+  /** Set to a function to exercise the Phase 6 planning flow; unset means "not supported". */
+  suggestTopics?: (input: { systemInstruction: string; prompt: string }, count: number) => Promise<string>;
+
   async generatePost(input: GeneratePostInput): Promise<DraftContent> {
     this.calls.push(input);
     const next = this.responses.shift();
@@ -255,6 +258,10 @@ export interface Harness {
   sheets: FakeSheetsGateway;
   config: AppConfig;
   env: Record<string, string>;
+  /** Phase 10: every webhook request the app tried to send, in order. */
+  webhooks: Array<{ url: string; headers: Record<string, string>; body: string }>;
+  /** Queue the responses those sends should get (an Error = network failure). */
+  webhookResponses: Array<{ status: number; body: string } | Error>;
 }
 
 export interface HarnessOptions {
@@ -307,6 +314,10 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     })),
   };
 
+  const webhooks: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+  /** Queued webhook responses: an Error means "network failure", a value is the HTTP response. */
+  const webhookResponses: Array<{ status: number; body: string } | Error> = [];
+
   const services: Services = {
     config,
     db,
@@ -318,6 +329,13 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     cipher,
     clock,
     logger: createLogger(db),
+    // Tests record webhook sends instead of making them; `webhooks` collects what would have gone out.
+    webhookSender: async (url, init) => {
+      webhooks.push({ url, headers: init.headers, body: init.body });
+      const next = webhookResponses.shift();
+      if (next instanceof Error) throw next;
+      return next ?? { status: 200, body: 'ok' };
+    },
   };
 
   return {
@@ -325,6 +343,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     db,
     clock,
     ai,
+    webhooks,
+    webhookResponses,
     email,
     linkedin,
     whatsapp,

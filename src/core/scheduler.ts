@@ -4,9 +4,11 @@ import { generateDailyPost, type GenerationResult } from './generation';
 import { createLogger } from './logger';
 import { sendOwnerEmail } from './notify';
 import { sweepPublishing, type PublishOutcome } from './publishing';
-import { generationDue, nextSlot, slotForDate } from './schedule';
+import { generationDue, nextSlot, slotForDate, slotsForDate } from './schedule';
 import { MAX_GENERATION_ATTEMPTS_PER_DAY, type Services } from './services';
 import { pruneDiscardedVariants } from './variants';
+import { deliverDueWebhooks } from './omni';
+import { webhookDispatcherFor } from './omni-dispatch';
 import { isoInstant, localDate } from './time';
 import type { ScheduledSlot, Settings } from './types';
 
@@ -17,11 +19,17 @@ export interface TickResult {
     attempted: boolean;
     reason: string;
     result: GenerationResult | null;
+    /** Phase 10: one entry per due slot, so a two-post day reports both drafts. */
+    slots: Array<{ slotIndex: number; result: GenerationResult | null }>;
   };
   publishing: PublishOutcome[];
   expiredApprovals: number;
+  /** Phase 10: approvals that got a "link is expiring" push this tick. */
+  pushWarnings?: number;
   recoveredJobs: number;
   prunedVariants: number;
+  /** Phase 10: webhook deliveries attempted in this tick. */
+  webhooks: { attempted: number; delivered: number; failed: number; retrying: number };
   linkedInWarningSent: boolean;
   errors: string[];
 }
@@ -30,6 +38,8 @@ export interface TickOptions {
   trigger: 'cron' | 'manual';
   force?: boolean;
   runDate?: string;
+  /** Which post of the day a forced run should generate. Defaults to the first slot. */
+  slotIndex?: number;
   skipSync?: boolean;
 }
 
@@ -53,11 +63,13 @@ export async function runAutomationTick(
   const result: TickResult = {
     ranAt: isoInstant(now),
     localDate: today,
-    generation: { attempted: false, reason: 'not evaluated', result: null },
+    generation: { attempted: false, reason: 'not evaluated', result: null, slots: [] },
     publishing: [],
     expiredApprovals: 0,
+    pushWarnings: 0,
     recoveredJobs: 0,
     prunedVariants: 0,
+    webhooks: { attempted: 0, delivered: 0, failed: 0, retrying: 0 },
     linkedInWarningSent: false,
     errors: [],
   };
@@ -92,17 +104,33 @@ export async function runAutomationTick(
   if (options.force) {
     result.generation = await runGeneration(services, options, log, 'manual run requested');
   } else if (!due.due) {
-    result.generation = { attempted: false, reason: due.reason, result: null };
+    result.generation = {
+      attempted: false,
+      reason: due.reason,
+      result: null,
+      slots: [],
+    };
   } else {
-    let claimed = false;
-    try {
-      claimed = await services.db.claimGenerationDay(today, MAX_GENERATION_ATTEMPTS_PER_DAY);
-    } catch (error) {
-      result.errors.push(`claim_generation_day: ${safeErrorMessage(error)}`);
+    // One tick can owe several drafts (a 10:30 slot and a 15:00 slot both past their generation time).
+    // Each slot is claimed separately, so a slot that already succeeded today simply does not claim.
+    const outcomes: Array<{ slotIndex: number; result: GenerationResult | null }> = [];
+    let firstReason = due.reason;
+    for (const slot of due.slots) {
+      let claimed = false;
+      try {
+        claimed =
+          slot.slotIndex === 0
+            ? await services.db.claimGenerationSlot(today, 0, MAX_GENERATION_ATTEMPTS_PER_DAY)
+            : await services.db.claimGenerationSlot(today, slot.slotIndex, MAX_GENERATION_ATTEMPTS_PER_DAY);
+      } catch (error) {
+        result.errors.push(`claim_generation_slot: ${safeErrorMessage(error)}`);
+      }
+      if (!claimed) continue;
+      const outcome = await runGeneration(services, { ...options, slotIndex: slot.slotIndex }, log, due.reason);
+      outcomes.push({ slotIndex: slot.slotIndex, result: outcome.result });
     }
-    if (claimed) {
-      result.generation = await runGeneration(services, options, log, due.reason);
-    } else {
+
+    if (outcomes.length === 0) {
       const state = await services.db.getSchedulerState().catch(() => null);
       result.generation = {
         attempted: false,
@@ -111,6 +139,14 @@ export async function runAutomationTick(
             ? 'Already generated today'
             : 'Generation already claimed or attempt limit reached for today',
         result: null,
+        slots: [],
+      };
+    } else {
+      result.generation = {
+        attempted: true,
+        reason: firstReason,
+        result: outcomes[0]!.result,
+        slots: outcomes,
       };
     }
   }
@@ -121,6 +157,25 @@ export async function runAutomationTick(
     const message = safeErrorMessage(error);
     result.errors.push(`publishing_sweep: ${message}`);
     await log.error('scheduler.publishing_sweep_failed', message);
+  }
+
+  try {
+    // Outbound webhooks go out on every tick, including the ones that only retry a failed delivery.
+    result.webhooks = await deliverDueWebhooks(
+      { db: services.db },
+      webhookDispatcherFor(services),
+      (url, init) => services.webhookSender(url, init),
+      { now },
+    );
+  } catch (error) {
+    result.errors.push(`webhooks: ${safeErrorMessage(error)}`);
+  }
+
+  try {
+    // Phase 10: a phone warning before an approval link dies, so the window is not missed silently.
+    result.pushWarnings = await warnExpiringApprovals(services, settings);
+  } catch (error) {
+    result.errors.push(`push_expiry_warning: ${safeErrorMessage(error)}`);
   }
 
   try {
@@ -150,13 +205,28 @@ async function runGeneration(
   log: ReturnType<typeof createLogger>,
   reason: string,
 ): Promise<TickResult['generation']> {
-  const today = localDate(services.clock.now(), (await services.db.getSettings()).ownerTimezone);
+  const settings = await services.db.getSettings();
+  const today = localDate(services.clock.now(), settings.ownerTimezone);
+  const slotIndex = options.slotIndex ?? 0;
   try {
     const generation = await generateDailyPost(services, {
       runDate: options.runDate,
+      slotIndex,
       trigger: options.trigger,
       skipSync: options.skipSync,
     });
+    // Close the slot's claim: 'succeeded' makes it unclaimable today, 'failed' leaves room to retry.
+    const slotStatus =
+      generation.status === 'generated'
+        ? 'succeeded'
+        : generation.status === 'duplicate'
+          ? 'succeeded'
+          : generation.status === 'no_topic'
+            ? 'no_topic'
+            : 'failed';
+    await services.db
+      .finishGenerationSlot(options.runDate ?? today, slotIndex, slotStatus)
+      .catch(() => undefined);
     const status =
       generation.status === 'generated'
         ? 'succeeded'
@@ -172,7 +242,7 @@ async function runGeneration(
         lastGenerationDate: options.runDate ?? today,
       })
       .catch(() => undefined);
-    return { attempted: true, reason, result: generation };
+    return { attempted: true, reason, result: generation, slots: [{ slotIndex, result: generation }] };
   } catch (error) {
     const message = safeErrorMessage(error);
     await log.error('scheduler.generation_crashed', message);
@@ -186,8 +256,59 @@ async function runGeneration(
       attempted: true,
       reason,
       result: { status: 'failed', stage: 'unhandled', error: message },
+      slots: [{ slotIndex, result: null }],
     };
   }
+}
+
+/**
+ * Pushes one warning for approvals that expire soon, and only once per approval.
+ *
+ * The dedupe is the log: an approval that was already warned about has a `push.approval_expiring`
+ * entry with its post id, so a tick every five minutes does not become a notification every five
+ * minutes.
+ */
+async function warnExpiringApprovals(services: Services, settings: Settings): Promise<number> {
+  const pending = await services.db.listApprovals({ statuses: ['pending'], limit: 20 });
+  if (pending.length === 0) return 0;
+  const nowMs = services.clock.now().getTime();
+  const warned = new Set(
+    (await services.db.listLogs({ event: 'push.approval_expiring', limit: 50 })).map(
+      (entry) => String((entry.context as { postId?: string } | null)?.postId ?? ''),
+    ),
+  );
+
+  let sent = 0;
+  for (const approval of pending) {
+    const hoursLeft = (new Date(approval.expiresAt).getTime() - nowMs) / 3_600_000;
+    // Two hours: close enough to act, far enough that the owner is not woken for nothing.
+    if (hoursLeft <= 0 || hoursLeft > 2) continue;
+    const post = await services.db.getPost(approval.postId);
+    if (!post || post.status !== 'pending_approval') continue;
+    if (warned.has(post.id)) continue;
+    try {
+      const { broadcastPushEvent } = await import('./push-send');
+      await broadcastPushEvent(services, 'approval.expiring', {
+        runDate: post.runDate,
+        hoursLeft: Math.max(1, Math.round(hoursLeft)),
+      });
+    } catch {
+      continue;
+    }
+    await createLogger(services.db, { actor: 'scheduler' })
+      .info(
+        'push.approval_expiring',
+        `Approval for ${post.runDate} expires in about ${Math.round(hoursLeft)}h`,
+        { postId: post.id, hoursLeft },
+      )
+      .catch(() => undefined);
+    sent += 1;
+  }
+  if (sent > 0 && !settings.emailNotifications) {
+    // Push is not gated by the email setting here - it is the channel that is still awake.
+    return sent;
+  }
+  return sent;
 }
 
 async function maybeWarnLinkedInExpiry(services: Services, settings: Settings): Promise<boolean> {
@@ -233,6 +354,8 @@ export interface ScheduleOverview {
   generationDueNow: boolean;
   generationReason: string;
   todaySlot: ScheduledSlot;
+  /** Phase 10: every slot of today, in publish order. */
+  todaySlots: ScheduledSlot[];
   nextSlot: ScheduledSlot | null;
   schedulerState: Awaited<ReturnType<Services['db']['getSchedulerState']>>;
   queuedJobs: number;
@@ -258,6 +381,7 @@ export async function describeSchedule(services: Services): Promise<ScheduleOver
     generationDueNow: due.due,
     generationReason: due.reason,
     todaySlot: slotForDate(settings, today),
+    todaySlots: slotsForDate(settings, today).slots,
     nextSlot: nextSlot(settings, now),
     schedulerState: await services.db.getSchedulerState(),
     queuedJobs: jobs.filter((job) => job.status === 'queued').length,

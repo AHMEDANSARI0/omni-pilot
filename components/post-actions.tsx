@@ -180,7 +180,7 @@ export function PostActions({
             href={post.publishedUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-[13px] font-medium text-primary"
+            className="inline-flex h-11 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-[13px] font-medium text-primary sm:h-9"
           >
             View on LinkedIn
           </a>

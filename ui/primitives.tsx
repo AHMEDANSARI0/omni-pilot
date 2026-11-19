@@ -107,9 +107,10 @@ const buttonVariants = cva(
       },
       size: {
         default: 'h-11 px-5',
-        sm: 'h-9 px-3.5 text-[13px]',
+        // 44px on touch (phones), 36px once there is a pointer - the Responsive rule.
+        sm: 'h-11 px-3.5 text-[13px] sm:h-9',
         lg: 'h-12 px-6 text-[15px]',
-        icon: 'h-10 w-10',
+        icon: 'h-11 w-11 sm:h-10 sm:w-10',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },
@@ -156,7 +157,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/70 bg-white/55 text-muted-foreground backdrop-blur-md transition-colors hover:bg-white/85 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+        'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/70 bg-white/55 text-muted-foreground backdrop-blur-md transition-colors hover:bg-white/85 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 sm:h-9 sm:w-9',
         className,
       )}
       {...props}
@@ -298,17 +299,22 @@ export function Switch({
       aria-checked={checked}
       aria-label={label}
       onClick={() => onCheckedChange(!checked)}
-      className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border border-white/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2',
-        checked ? 'bg-ink' : 'bg-ink/15',
-      )}
+      className="group relative -m-2 inline-flex h-11 w-[60px] shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2"
     >
       <span
+        aria-hidden
         className={cn(
-          'inline-block h-[18px] w-[18px] transform rounded-full bg-white shadow-sm transition-transform',
-          checked ? 'translate-x-[22px]' : 'translate-x-[3px]',
+          'relative flex h-6 w-11 items-center rounded-full border border-white/50 transition-colors',
+          checked ? 'bg-ink' : 'bg-ink/15',
         )}
-      />
+      >
+        <span
+          className={cn(
+            'inline-block h-[18px] w-[18px] transform rounded-full bg-white shadow-sm transition-transform',
+            checked ? 'translate-x-[22px]' : 'translate-x-[3px]',
+          )}
+        />
+      </span>
     </button>
   );
 }
@@ -439,7 +445,8 @@ export function Segmented<T extends string>({
           aria-selected={value === option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            'whitespace-nowrap rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors',
+            // 44 px on touch, compact from sm up (dashboard density on desktop).
+            'min-h-[44px] min-w-[44px] whitespace-nowrap rounded-full px-3.5 text-[12px] font-medium transition-colors sm:min-h-0 sm:min-w-0 sm:py-1.5',
             value === option.value
               ? 'bg-white text-foreground shadow-sm'
               : 'text-muted-foreground hover:text-foreground',

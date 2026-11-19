@@ -35,6 +35,8 @@ export type GenerationResult =
 
 export interface GenerateOptions {
   runDate?: string;
+  /** Phase 10: which post of the day (0-based). Defaults to the first slot. */
+  slotIndex?: number;
   trigger?: string;
   skipSync?: boolean;
   sendEmail?: boolean;
@@ -54,28 +56,31 @@ export async function generateDailyPost(
   const settings = await services.db.getSettings();
   const now = services.clock.now();
   const runDate = options.runDate ?? localDate(now, settings.ownerTimezone);
+  const slotIndex = options.slotIndex ?? 0;
   const runId = crypto.randomUUID();
   const log = createLogger(services.db, {
     runId,
     actor: options.trigger ?? 'scheduler',
-    extra: { runDate },
+    extra: { runDate, slotIndex },
   });
 
   await log.info('generation.started', `Generation run for ${runDate}`, {
     trigger: options.trigger ?? 'scheduler',
     model: settings.aiModel,
+    slotIndex,
   });
 
-  const existing = await services.db.getPostByDate(runDate);
+  const existing = await services.db.getPostByDate(runDate, slotIndex);
   if (existing) {
     await log.info('generation.duplicate_skipped', `A post already exists for ${runDate}`, {
       postId: existing.id,
       status: existing.status,
+      slotIndex,
     });
     return {
       status: 'duplicate',
       post: existing,
-      reason: `A post for ${runDate} already exists (status: ${existing.status}).`,
+      reason: `A post for ${runDate}${slotIndex > 0 ? ` (slot ${slotIndex + 1})` : ''} already exists (status: ${existing.status}).`,
     };
   }
 
@@ -93,9 +98,9 @@ export async function generateDailyPost(
     }
   }
 
-  const topic = await services.db.claimDailyTopic(runDate, 3);
+  const topic = await services.db.claimDailyTopic(runDate, 3, slotIndex);
   if (!topic) {
-    const reason = `No pending topic found for ${runDate}. Add a row with this DATE and STATUS=Pending.`;
+    const reason = `No pending topic found for ${runDate}${slotIndex > 0 ? ` (slot ${slotIndex + 1})` : ''}. Add a row with this DATE and STATUS=Pending.`;
     await log.warn('generation.no_topic', reason, { syncError });
     if (settings.emailNotifications) {
       const { buildNoTopicEmail } = await import('./emails');
@@ -147,6 +152,7 @@ export async function generateDailyPost(
     post = await services.db.createPost({
       topicId: topic.id,
       runDate,
+      slotIndex,
       hook: formatted.hook,
       body: formatted.body,
       hashtags: formatted.hashtags,
@@ -159,7 +165,7 @@ export async function generateDailyPost(
     });
   } catch (error) {
     if (isAppError(error) && error.code === 'CONFLICT') {
-      const concurrent = await services.db.getPostByDate(runDate);
+      const concurrent = await services.db.getPostByDate(runDate, slotIndex);
       await log.warn(
         'generation.duplicate_race',
         'Another run created the post for this date first',
@@ -247,6 +253,35 @@ export async function generateDailyPost(
     }
   } else {
     approvalEmailError = 'Email skipped by request';
+  }
+
+  // Phase 10: the owner's phone hears about the draft too. Independent of the email setting? No:
+  // push is a notification channel like email, so it follows the same switch.
+  if (settings.emailNotifications) {
+    try {
+      const { broadcastPushEvent } = await import('./push-send');
+      await broadcastPushEvent(services, 'post.ready', {
+        runDate: post.runDate,
+        slotIndex: post.slotIndex,
+      });
+    } catch {
+      // A push that cannot be sent must never fail the generation run.
+    }
+  }
+
+  // Phase 10: OmniFlow hears about the draft. Never blocks the run.
+  try {
+    const { emitWebhookEvent } = await import('./omni');
+    const { webhookDispatcherFor } = await import('./omni-dispatch');
+    await emitWebhookEvent(webhookDispatcherFor(services), {
+      event: 'post.generated',
+      eventId: `${post.id}:post.generated`,
+      data: { postId: post.id, runDate, slotIndex, variantCount },
+      baseUrl: services.config.baseUrl,
+      now,
+    });
+  } catch {
+    await log.warn('generation.webhook_failed', 'Could not queue the post.generated webhook');
   }
 
   await log.info('generation.completed', `Generated post for ${runDate}`, {

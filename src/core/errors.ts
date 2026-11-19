@@ -5,6 +5,7 @@ export type ErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'DUPLICATE_TOPIC'
   | 'GONE'
   | 'RATE_LIMITED'
   | 'CONFIG_ERROR'
@@ -24,6 +25,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
+  // A near-duplicate is a decision, not a bug: 409 so a client can offer "add anyway".
+  DUPLICATE_TOPIC: 409,
   GONE: 410,
   RATE_LIMITED: 429,
   CONFIG_ERROR: 500,

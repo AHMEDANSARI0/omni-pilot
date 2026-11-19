@@ -2,6 +2,8 @@
 
 import * as React from 'react';
 import type { ActivityPointDto } from '@/lib/types';
+import type { ApprovalLagDto } from '@/lib/types';
+import { formatLag } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, Segmented, theme } from '@/ui';
 
 type Range = '7' | '30' | '90';
@@ -53,7 +55,13 @@ function labelFor(date: string, range: Range): string {
   }).format(parsed);
 }
 
-export function ActivityChart({ series }: { series: ActivityPointDto[] }) {
+export function ActivityChart({
+  series,
+  approvalLag,
+}: {
+  series: ActivityPointDto[];
+  approvalLag?: ApprovalLagDto;
+}) {
   const [range, setRange] = React.useState<Range>('30');
   const points = React.useMemo(() => series.slice(-Number(range)), [series, range]);
 
@@ -63,23 +71,28 @@ export function ActivityChart({ series }: { series: ActivityPointDto[] }) {
         (accumulator, point) => ({
           generated: accumulator.generated + point.generated,
           published: accumulator.published + point.published,
+          failed: accumulator.failed + point.failed,
         }),
-        { generated: 0, published: 0 },
+        { generated: 0, published: 0, failed: 0 },
       ),
     [points],
   );
 
-  const max = Math.max(1, ...points.map((point) => Math.max(point.generated, point.published)));
+  const max = Math.max(
+    1,
+    ...points.map((point) => Math.max(point.generated, point.published, point.failed)),
+  );
   const ceiling = niceCeil(max);
   const usableHeight = VIEW_H - TOP_PAD - BOTTOM_PAD;
 
-  const coordinates = (key: 'generated' | 'published') =>
+  const coordinates = (key: 'generated' | 'published' | 'failed') =>
     points.map((point, index) => ({
       x: points.length <= 1 ? VIEW_W / 2 : (index / (points.length - 1)) * VIEW_W,
       y: TOP_PAD + usableHeight - (point[key] / ceiling) * usableHeight,
     }));
 
   const generatedLine = smoothPath(coordinates('generated'));
+  const failedLine = smoothPath(coordinates('failed'));
   const publishedLine = smoothPath(coordinates('published'));
   const areaPath =
     generatedLine && points.length > 1
@@ -128,6 +141,10 @@ export function ActivityChart({ series }: { series: ActivityPointDto[] }) {
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
             <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-warm-strong" />
             {totals.published} published
+          </span>
+          <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-destructive" />
+            {totals.failed} failed
           </span>
         </div>
 
@@ -186,6 +203,14 @@ export function ActivityChart({ series }: { series: ActivityPointDto[] }) {
                   vectorEffect="non-scaling-stroke"
                 />
                 <path
+                  d={failedLine}
+                  fill="none"
+                  stroke={theme.colors.coral}
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <path
                   d={generatedLine}
                   fill="none"
                   stroke={theme.colors.ink}
@@ -204,6 +229,16 @@ export function ActivityChart({ series }: { series: ActivityPointDto[] }) {
             </div>
           </div>
         )}
+
+        <p className="mt-3 border-t border-white/60 pt-2.5 text-[11.5px] text-muted-foreground">
+          Approval reply time (median):{' '}
+          <span className="font-medium text-foreground">
+            {approvalLag ? formatLag(approvalLag) : 'not measured yet'}
+          </span>
+          {approvalLag && approvalLag.sample > 0
+            ? ` · from ${approvalLag.sample} decided approval(s)`
+            : ' · appears after the first approval decision'}
+        </p>
       </CardContent>
     </Card>
   );

@@ -181,3 +181,99 @@ describe('daily generation pipeline', () => {
     expect(harness.ai.calls[0]?.recentHooks).toContain('An older hook about retries.');
   });
 });
+
+describe('Phase 7 - duplicate protection during generation', () => {
+  const previousHook = 'The retry storm that taught me to log every step of the pipeline.';
+
+  it('drops a draft that repeats a recent hook, retries, and keeps the fresh one', async () => {
+    const harness = createHarness({ now: '2026-11-16T05:00:00Z' });
+    await harness.db.createTopic({
+      sheetRowNumber: null,
+      topicDate: '2026-11-16',
+      topic: 'Idempotency keys for agent tool calls',
+      contentType: 'insight',
+      keyPoints: null,
+      targetAudience: null,
+    });
+    // An older post that already used that exact opening.
+    const previous = await harness.db.createPost({
+      topicId: null,
+      runDate: '2026-11-02',
+      hook: previousHook,
+      body: 'Some older body about retries.',
+      hashtags: ['A'],
+      fullText: `${previousHook}\n\nSome older body about retries.`,
+      charCount: 80,
+      provider: 'test',
+      model: 'test',
+      status: 'published',
+      source: 'test',
+    });
+    expect(previous.id).toBeTruthy();
+
+    // Attempt 1 repeats the old hook verbatim; attempt 2 is a genuinely new opening.
+    harness.ai.responses.push(
+      {
+        hook: previousHook,
+        body: 'This text must never reach the queue because the opening is a repeat.',
+        hashtags: ['A'],
+      },
+      {
+        hook: 'Approval emails went to spam for three days before anyone noticed.',
+        body: 'The fix was a plain-text alternative and a shorter subject line. Nothing clever.\n\nWe also stopped sending from the personal address, which was the actual trigger.\n\nTwo small changes, both verifiable in the logs.',
+        hashtags: ['Email', 'Deliverability'],
+      },
+    );
+
+    const result = await generateDailyPost(harness.services, { runDate: '2026-11-16' });
+    expect(result.status).toBe('generated');
+    if (result.status !== 'generated') throw new Error('expected a generated run');
+    expect(result.post.hook).not.toBe(previousHook);
+    expect(result.post.hook).toContain('Approval emails went to spam');
+
+    const logged = await harness.db.listLogs({ limit: 50 });
+    const duplicate = logged.find((entry) => entry.event === 'generation.duplicate_draft');
+    expect(duplicate).toBeTruthy();
+    expect(duplicate?.context.reason).toContain('2026-11-02');
+  });
+
+  it('fails loudly instead of publishing a repeat when every attempt repeats', async () => {
+    const harness = createHarness({ now: '2026-11-16T05:00:00Z' });
+    await harness.db.createTopic({
+      sheetRowNumber: null,
+      topicDate: '2026-11-16',
+      topic: 'Idempotency keys for agent tool calls',
+      contentType: 'insight',
+      keyPoints: null,
+      targetAudience: null,
+    });
+    await harness.db.createPost({
+      topicId: null,
+      runDate: '2026-11-02',
+      hook: previousHook,
+      body: 'Some older body about retries.',
+      hashtags: ['A'],
+      fullText: `${previousHook}\n\nSome older body about retries.`,
+      charCount: 80,
+      provider: 'test',
+      model: 'test',
+      status: 'published',
+      source: 'test',
+    });
+
+    const repeat = {
+      hook: previousHook,
+      body: 'This text must never reach the queue because the opening is a repeat.',
+      hashtags: ['A'],
+    };
+    // Two attempts, both repeating: the pipeline must report the failure, not store a duplicate.
+    harness.ai.responses.push([repeat], [repeat]);
+
+    const result = await generateDailyPost(harness.services, { runDate: '2026-11-16' });
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') throw new Error('expected a failed run');
+    expect(result.stage).toBe('ai_generation');
+    expect(result.error).toMatch(/Repeats earlier work/);
+    expect(await harness.db.countPosts()).toBe(1); // only the older post exists
+  });
+});

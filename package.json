@@ -5,6 +5,13 @@
   "description": "Personal LinkedIn AI content automation with Google Sheets planning, AI generation, email approval and official LinkedIn API publishing.",
   "type": "module",
   "scripts": {
+    "e2e": "next build && playwright test",
+    "e2e:only": "playwright test",
+    "e2e:ui": "next build && playwright test --ui",
+    "coverage": "vitest run --coverage",
+    "check": "npm run typecheck && npm run check:ui && npm run coverage && npm run e2e",
+    "db:contract": "tsx scripts/verify-db-contract.ts",
+    "db:local": "node scripts/verify-db-local.mjs",
     "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch --env-file=.env.local src/dev/node.ts",
     "dev:web": "next dev -p 3000",
@@ -40,13 +47,15 @@
     "@types/react-dom": "^19.0.2",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
+    "playwright": "^1.65.1",
     "postcss": "^8.4.49",
     "prettier": "^3.4.2",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8",
-    "wrangler": "^4.162.0"
+    "wrangler": "^4.162.0",
+    "@playwright/test": "^1.56.1"
   },
   "engines": {
     "node": ">=20"

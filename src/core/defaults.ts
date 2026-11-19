@@ -30,6 +30,7 @@ export function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     hashtagMin: 3,
     hashtagMax: 5,
     maxPostChars: 2800,
+    publishTimes: [],
     emailNotifications: true,
     updatedAt: new Date().toISOString(),
     ...overrides,

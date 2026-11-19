@@ -23,6 +23,29 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run check:ui
+      # 221 tests + the src/core coverage gate (85% lines/functions, 75% branches).
+      - run: npm run coverage
       - run: npm run build
       - run: npx wrangler deploy --dry-run --outdir=.wrangler-dist
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # Whole chain against the real build + local service stubs (no credentials needed).
+      - run: npm run e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            e2e/artifacts/
+            e2e/report/
+          retention-days: 7

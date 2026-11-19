@@ -56,6 +56,13 @@ export interface AppConfig {
     ownerNumber: string | null;
     apiVersion: string;
   };
+  /** Phase 10: Web Push. Public key is served to the browser; private key never leaves the Worker. */
+  push: {
+    publicKey: string | null;
+    privateKey: string | null;
+    /** `mailto:` address the push service attributes notifications to. */
+    subject: string;
+  };
   cronSecret: string;
   /** live = real external services, local = deterministic in-process stubs for dev/tests. */
   servicesMode: 'live' | 'local';
@@ -148,6 +155,9 @@ export function loadConfig(source: EnvSource): AppConfig {
       WHATSAPP_APP_SECRET: optionalString,
       WHATSAPP_OWNER_NUMBER: optionalString,
       WHATSAPP_API_VERSION: z.string().optional(),
+      VAPID_PUBLIC_KEY: z.string().optional(),
+      VAPID_PRIVATE_KEY: z.string().optional(),
+      VAPID_SUBJECT: z.string().optional(),
       CRON_SECRET: optionalString,
       RATE_LIMIT_WINDOW_SECONDS: z.string().optional(),
       RATE_LIMIT_MAX_REQUESTS: z.string().optional(),
@@ -238,6 +248,11 @@ export function loadConfig(source: EnvSource): AppConfig {
         ? parsed.WHATSAPP_OWNER_NUMBER.replace(/[^0-9]/g, '')
         : null,
       apiVersion: parsed.WHATSAPP_API_VERSION || 'v21.0',
+    },
+    push: {
+      publicKey: parsed.VAPID_PUBLIC_KEY ?? null,
+      privateKey: parsed.VAPID_PRIVATE_KEY ?? null,
+      subject: parsed.VAPID_SUBJECT || `mailto:${parsed.OWNER_EMAIL}`,
     },
     cronSecret: parsed.CRON_SECRET ?? 'local-cron-secret',
     servicesMode,

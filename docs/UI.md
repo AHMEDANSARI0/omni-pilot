@@ -9,10 +9,18 @@ ui/
 ├─ theme.ts        ← JS mirror (SVG charts ke liye)
 ├─ icons.tsx       ← sirf yahan lucide import hota hai; naam meaning se (IconApprove, IconPosts)
 ├─ primitives.tsx  ← Button, Card, Input, Badge, Alert, Modal, PageHeader, Segmented, Switch …
-├─ layout.tsx      ← Shell, sidebar, topbar, mobile tab bar (sirf props, koi data nahi)
+├─ shell/          ← the frame, split into small files (Phase 5)
+│  ├─ shell.tsx        ← Shell: the layout contract (pinned rail + reading column)
+│  ├─ sidebar.tsx      ← rail + drawer contents (NavList, Sidebar)
+│  ├─ topbar.tsx       ← Topbar + MobileTabBar
+│  ├─ drawer.tsx       ← mobile sheet (backdrop, Esc, focus trap, scroll lock)
+│  └─ sidebar-state.ts ← collapse state, localStorage, scroll lock, focus trap
+├─ decision-group.tsx ← Approve/Reject split button (approvals)
+├─ calendar-grid.tsx  ← month grid + legend (Phase 6). Props only:
+│                       `kind`, `title`, `isPublishingDay`, `isToday` come resolved from the API
 ├─ nav.ts          ← navigation model + page titles
-├─ index.ts        ← pages ke liye barrel (primitives + icons)
-└─ shell.ts        ← app shell ke liye barrel (layout + nav)
+├─ index.ts        ← pages ke liye barrel (primitives + icons + decision group)
+└─ shell.ts        ← app shell ke liye barrel (shell + nav)
 ```
 
 **Rule:** `ui/` kabhi `@/lib`, `@/src`, `@/components` ya `@/app` import nahi karta. Data wiring
@@ -71,7 +79,7 @@ colour use nahi karta.
 
 ### 3. Component shape
 
-`ui/primitives.tsx` (cards, buttons, inputs) ya `ui/layout.tsx` (sidebar, topbar, mobile bar) edit karein.
+`ui/primitives.tsx` (cards, buttons, inputs) ya `ui/shell/` (sidebar, topbar, mobile drawer) edit karein.
 
 ---
 
@@ -126,6 +134,20 @@ No `<div className="bg-white rounded-lg shadow">` — primitives use karein.
 
 ---
 
+## Calendar grid (Phase 6)
+
+`ui/calendar-grid.tsx` **never** parses a date, decides whether a day is a publishing day, or picks a
+colour by status. It receives a flat `CalendarDay[]` where the API has already resolved:
+
+```ts
+{ date: '2026-11-18', day: 18, inMonth: true, isToday: true, isPublishingDay: true,
+  kind: 'open' | 'published' | 'approved' | 'pending' | 'failed', title: '...' }
+```
+
+`kind` maps to CSS in `ui/tokens.css` (`[data-kind='…']` fills, `.day-publishing` dashed outline for an
+open day, `.today-pill`). Day cells are ≥44 px tall at every width (64 px on phones, 86 px desktop), so a
+tap target is never smaller than the finger. Changing the calendar's look = editing `tokens.css` only.
+
 ## Guardrail: `npm run check:ui`
 
 Ye script (aur `tests/ui-separation.test.ts`) fail karta hai jab:
@@ -161,4 +183,4 @@ Yani design ka koi hissa chupke se pages me leak nahi kar sakta. Tests me bhi ye
   pass har baar chalta hai aur backups ko `.pre-phase3-removed/` me le jata hai).
 - **`npm run check:ui` fail** — error line pehle file:line dikhata hai; colour ko `ui/tokens.css` me token
   banayein, icon ko `ui/icons.tsx` me add karein.
-- **Design change karna hai** — sirf `ui/tokens.css`; component ka shape `ui/primitives.tsx` / `ui/layout.tsx`.
+- **Design change karna hai** — sirf `ui/tokens.css`; component ka shape `ui/primitives.tsx` / `ui/shell/`.

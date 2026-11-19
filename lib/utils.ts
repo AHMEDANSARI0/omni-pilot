@@ -41,3 +41,14 @@ export function relativeTime(iso: string | null | undefined): string {
 export function truncate(text: string, max = 160): string {
   return text.length <= max ? text : `${text.slice(0, max).trimEnd()}…`;
 }
+
+/**
+ * Approval reply time as a short label. A number that has never been measured says so:
+ * "not measured yet" - never "0 min", which would read like an instant reply.
+ */
+export function formatLag(lag: { medianHours: number | null }): string {
+  if (lag.medianHours === null) return 'not measured yet';
+  if (lag.medianHours < 1) return `${Math.round(lag.medianHours * 60)} min`;
+  if (lag.medianHours < 48) return `${lag.medianHours} h`;
+  return `${Math.round((lag.medianHours / 24) * 10) / 10} days`;
+}

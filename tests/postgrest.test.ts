@@ -277,7 +277,8 @@ describe('PostgREST adapter (production database path)', () => {
     const topic = await db.claimDailyTopic('2026-11-16', 3);
     expect(topic?.status).toBe('claimed');
     expect(calls[0]?.url).toContain('/rpc/claim_daily_topic');
-    expect(calls[0]?.body).toEqual({ p_date: '2026-11-16', p_max_attempts: 3 });
+    // Phase 10: the slot is part of the claim, defaulting to 0 so a single-slot day is unchanged.
+    expect(calls[0]?.body).toEqual({ p_date: '2026-11-16', p_max_attempts: 3, p_slot: 0 });
 
     await expect(db.claimGenerationDay('2026-11-16', 3)).resolves.toBe(true);
     await expect(db.consumeApproval('hash', 'approve')).resolves.toBeNull();
@@ -324,5 +325,42 @@ describe('PostgREST adapter (production database path)', () => {
     const error = await db.getSettings().catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(AppError);
     expect((error as AppError).code).toBe('DATABASE_ERROR');
+  });
+});
+
+/**
+ * PostgREST accepts one operator per column. Passing `topic_date=gte.x` and then `topic_date=lte.y` in
+ * the same object means the second value replaces the first, so the lower bound silently vanished and
+ * a "from .. to" range returned everything up to `to` - which made the dashboard's history and queue
+ * dates wider than asked, and made E2E data-setup checks look emptier than they were.
+ */
+describe('date ranges', () => {
+  it('sends a two-sided range as an and() group, not as two values on one column', async () => {
+    const { db, calls } = database(() => ({ status: 200, body: [] }));
+    await db.listTopics({ from: '2032-05-01', to: '2032-05-31' });
+    const query = new URL(String(calls[0]!.url)).searchParams;
+    expect(query.get('topic_date')).toBeNull();
+    expect(query.get('and')).toBe('(topic_date.gte.2032-05-01,topic_date.lte.2032-05-31)');
+  });
+
+  it('keeps a one-sided range on the column itself', async () => {
+    const { db, calls } = database(() => ({ status: 200, body: [] }));
+    await db.listTopics({ from: '2032-05-01' });
+    expect(new URL(String(calls[0]!.url)).searchParams.get('topic_date')).toBe('gte.2032-05-01');
+
+    const openEnd = database(() => ({ status: 200, body: [] }));
+    await openEnd.db.listTopics({ to: '2032-05-31' });
+    expect(new URL(String(openEnd.calls[0]!.url)).searchParams.get('topic_date')).toBe(
+      'lte.2032-05-31',
+    );
+  });
+
+  it('applies the same rule to the publishing history', async () => {
+    const { db, calls } = database(() => ({ status: 200, body: [] }));
+    await db.listPosts({ from: '2032-05-01', to: '2032-05-31', statuses: ['published'] });
+    const query = new URL(String(calls[0]!.url)).searchParams;
+    expect(query.get('run_date')).toBeNull();
+    expect(query.get('and')).toBe('(run_date.gte.2032-05-01,run_date.lte.2032-05-31)');
+    expect(query.get('status')).toBe('in.(published)');
   });
 });

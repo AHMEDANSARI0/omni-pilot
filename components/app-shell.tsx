@@ -68,7 +68,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }}
       banner={
         mode?.servicesMode === 'local' ? (
-          <Alert tone="warning" className="mt-2 rounded-2xl">
+          <Alert tone="warning" className="rounded-2xl text-[12.5px]">
             Local mode: AI, email, Sheets and LinkedIn are stubbed. Nothing is really published.
           </Alert>
         ) : undefined

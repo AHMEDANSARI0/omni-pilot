@@ -22,7 +22,17 @@ export interface Services {
   cipher: Cipher;
   clock: Clock;
   logger: Logger;
+  /**
+   * Phase 10: how outbound webhooks are actually sent. A function, not an interface, because there is
+   * exactly one thing to do with it and tests replace it with one line.
+   */
+  webhookSender: WebhookSender;
 }
+
+export type WebhookSender = (
+  url: string,
+  init: { method: 'POST'; headers: Record<string, string>; body: string },
+) => Promise<{ status: number; body: string }>;
 
 export function systemClock(): Clock {
   return { now: () => new Date() };

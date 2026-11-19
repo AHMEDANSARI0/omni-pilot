@@ -1,7 +1,9 @@
 import {
   IconApprovals,
+  IconCalendar,
   IconDashboard,
   IconHistory,
+  IconHooks,
   IconPosts,
   IconQueue,
   IconSettings,
@@ -34,6 +36,22 @@ export const NAV: NavItem[] = [
     icon: IconQueue,
     title: 'Content queue',
     subtitle: 'Topics waiting to become posts',
+  },
+  {
+    href: '/calendar/',
+    label: 'Calendar',
+    shortLabel: 'Calendar',
+    icon: IconCalendar,
+    title: 'Calendar',
+    subtitle: 'What is planned, approved and published this month',
+  },
+  {
+    href: '/hooks/',
+    label: 'Hook library',
+    shortLabel: 'Hooks',
+    icon: IconHooks,
+    title: 'Hook library',
+    subtitle: 'Openings that worked, and the ones you rejected',
   },
   {
     href: '/posts/',

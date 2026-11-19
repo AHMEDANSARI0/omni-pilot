@@ -1,4 +1,13 @@
 import type {
+  ApiKeyRecord,
+  NewApiKey as ApiKeyInput,
+  NewWebhookEndpoint,
+  WebhookDelivery,
+  WebhookEndpoint,
+  WebhookEndpointPatch,
+} from './omni';
+import type { NewPushSubscription, PushSubscription } from './push';
+import type {
   Approval,
   ApprovalStatus,
   DraftContent,
@@ -44,12 +53,14 @@ export interface SettingsPatch {
   hashtagMax?: number;
   maxPostChars?: number;
   emailNotifications?: boolean;
+  publishTimes?: string[];
 }
 
 export interface TopicFilter {
   statuses?: TopicStatus[];
   from?: ISODate;
   to?: ISODate;
+  slotIndex?: number;
   limit?: number;
 }
 
@@ -57,6 +68,7 @@ export interface PostFilter {
   statuses?: PostStatus[];
   from?: ISODate;
   to?: ISODate;
+  slotIndex?: number;
   limit?: number;
   offset?: number;
 }
@@ -170,11 +182,12 @@ export interface Database {
   createTopic(input: NewTopic): Promise<Topic>;
   updateTopic(id: string, patch: TopicPatch): Promise<Topic>;
   upsertTopics(topics: NewTopic[]): Promise<{ inserted: number; skipped: number }>;
-  claimDailyTopic(topicDate: ISODate, maxAttempts: number): Promise<Topic | null>;
+  /** Claims the next usable topic for a date and slot. Slot 0 is the single-post case. */
+  claimDailyTopic(topicDate: ISODate, maxAttempts: number, slotIndex?: number): Promise<Topic | null>;
 
   createPost(input: NewPost): Promise<Post>;
   getPost(id: string): Promise<Post | null>;
-  getPostByDate(runDate: ISODate): Promise<Post | null>;
+  getPostByDate(runDate: ISODate, slotIndex?: number): Promise<Post | null>;
   listPosts(filter?: PostFilter): Promise<Post[]>;
   countPosts(statuses?: PostStatus[]): Promise<number>;
   updatePost(id: string, patch: PostPatch): Promise<Post>;
@@ -215,6 +228,9 @@ export interface Database {
   getSchedulerState(): Promise<SchedulerState>;
   updateSchedulerState(patch: SchedulerPatch): Promise<SchedulerState>;
   claimGenerationDay(date: ISODate, maxAttempts: number): Promise<boolean>;
+  /** Phase 10: the same claim, per (date, slot), so two posts a day do not block each other. */
+  claimGenerationSlot(date: ISODate, slotIndex: number, maxAttempts: number): Promise<boolean>;
+  finishGenerationSlot(date: ISODate, slotIndex: number, status: string): Promise<void>;
 
   /** Short code that maps a WhatsApp message back to a post (stored hashed, single use). */
   createWhatsAppCode(input: {
@@ -230,6 +246,59 @@ export interface Database {
     from: string;
     receivedAt: ISOInstant;
   }): Promise<boolean>;
+
+  /** Phase 10: hashed API keys (the plaintext never reaches the database). */
+  createApiKey(input: ApiKeyInput): Promise<ApiKeyRecord>;
+  listApiKeys(): Promise<ApiKeyRecord[]>;
+  findApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | null>;
+  revokeApiKey(id: string, at: ISOInstant): Promise<ApiKeyRecord>;
+  touchApiKey(id: string, at: ISOInstant): Promise<void>;
+
+  /** Phase 10: webhook endpoints and their delivery backlog. */
+  listWebhookEndpoints(options?: { activeOnly?: boolean }): Promise<WebhookEndpoint[]>;
+  createWebhookEndpoint(input: NewWebhookEndpoint): Promise<WebhookEndpoint>;
+  updateWebhookEndpoint(
+    id: string,
+    patch: WebhookEndpointPatch,
+  ): Promise<WebhookEndpoint>;
+  deleteWebhookEndpoint(id: string): Promise<void>;
+  /**
+   * Queues one delivery per endpoint. Returns false when this event id was already queued for that
+   * endpoint, which is what makes a retried tick idempotent.
+   */
+  enqueueWebhookDelivery(input: {
+    endpointId: string;
+    event: string;
+    eventId: string;
+    payload: Record<string, unknown>;
+    nextAttemptAt: ISOInstant;
+  }): Promise<boolean>;
+  claimWebhookDeliveries(limit: number): Promise<WebhookDelivery[]>;
+  updateWebhookDelivery(
+    id: string,
+    patch: {
+      status: WebhookDelivery['status'];
+      attempts: number;
+      nextAttemptAt: ISOInstant;
+      responseStatus: number | null;
+      responseBody: string | null;
+      deliveredAt: ISOInstant | null;
+    },
+  ): Promise<void>;
+  listWebhookDeliveries(options?: {
+    endpointId?: string;
+    statuses?: WebhookDelivery['status'][];
+    limit?: number;
+  }): Promise<WebhookDelivery[]>;
+
+  /** Phase 10: web push devices. Endpoint is unique, so a re-subscribe updates the same row. */
+  savePushSubscription(input: NewPushSubscription): Promise<PushSubscription>;
+  listPushSubscriptions(): Promise<PushSubscription[]>;
+  deletePushSubscription(endpoint: string): Promise<void>;
+  recordPushResult(
+    id: string,
+    result: { ok: boolean; status?: number; error?: string; at: ISOInstant },
+  ): Promise<void>;
 
   createOAuthState(input: {
     state: string;
@@ -253,6 +322,13 @@ export interface GeneratePostInput {
   hashtagMax: number;
   maxChars: number;
   recentHooks: string[];
+  /** Phase 7: formatted hook-library guidance from the owner's own outcomes ('' when empty). */
+  hookLibrary?: string;
+  /**
+   * Phase 10: how many drafts already exist for this date. A real model reads `recentHooks` and never
+   * repeats itself; a deterministic offline provider needs the number to pick a different angle.
+   */
+  slotIndex?: number;
 }
 
 /** Provider-independent AI port. Add a new provider by implementing this interface. */
@@ -265,6 +341,15 @@ export interface AiProvider {
    * instead of once per variant. Providers without it fall back to a single draft.
    */
   generateVariants?(input: GeneratePostInput, count: number): Promise<DraftVariant[]>;
+  /**
+   * Optional (Phase 6): one request that proposes several upcoming topics. Returns the raw
+   * JSON text - parsing and duplicate filtering live in src/core/suggestions.ts so they are
+   * testable without any provider.
+   */
+  suggestTopics?(
+    input: { systemInstruction: string; prompt: string },
+    count: number,
+  ): Promise<string>;
 }
 
 export interface SheetTopicRow {

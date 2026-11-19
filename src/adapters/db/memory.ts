@@ -1,6 +1,15 @@
 import { AppError } from '@/src/core/errors';
 import { defaultSettings } from '@/src/core/defaults';
 import type {
+  ApiKeyRecord,
+  NewApiKey as ApiKeyInput,
+  NewWebhookEndpoint,
+  WebhookDelivery,
+  WebhookEndpoint,
+  WebhookEndpointPatch,
+} from '@/src/core/omni';
+import type { NewPushSubscription, PushSubscription } from '@/src/core/push';
+import type {
   Approval,
   ApprovalStatus,
   Integration,
@@ -66,6 +75,12 @@ export class MemoryDatabase implements Database {
   >();
   private whatsappMessages = new Set<string>();
   private scheduler: SchedulerState;
+  /** Phase 10: generation claim per (date, slot), so two posts a day do not block each other. */
+  private generationClaims = new Map<string, { attempts: number; status: string }>();
+  private apiKeys = new Map<string, ApiKeyRecord>();
+  private webhookEndpoints = new Map<string, WebhookEndpoint>();
+  private webhookDeliveries = new Map<string, WebhookDelivery>();
+  private pushSubscriptions = new Map<string, PushSubscription>();
   private logSequence = 0;
 
   constructor(
@@ -92,13 +107,28 @@ export class MemoryDatabase implements Database {
   }
 
   async updateSettings(patch: SettingsPatch): Promise<Settings> {
-    this.settings = { ...this.settings, ...patch, updatedAt: this.now() };
+    const next = { ...this.settings, ...patch };
+    // Phase 10 invariants, mirrored from the PostgREST adapter so both behave identically:
+    // slot 0 is the canonical publish time, and a day can never hold more than five slots.
+    if (patch.publishTimes !== undefined) {
+      const times = [...new Set(patch.publishTimes.filter((time) => /^([01]\d|2[0-3]):[0-5]\d$/.test(time)))]
+        .sort()
+        .slice(0, 5);
+      next.publishTimes = times;
+      if (times[0]) next.publishTime = times[0];
+    } else if (patch.publishTime !== undefined) {
+      next.publishTimes = [patch.publishTime];
+    }
+    this.settings = { ...next, updatedAt: this.now() };
     return { ...this.settings };
   }
 
   async listTopics(filter: TopicFilter = {}): Promise<Topic[]> {
     return [...this.topics.values()]
       .filter((topic) => (filter.statuses ? filter.statuses.includes(topic.status) : true))
+      .filter((topic) =>
+        filter.slotIndex === undefined ? true : topic.slotIndex === filter.slotIndex,
+      )
       .filter((topic) => (filter.from ? topic.topicDate >= filter.from : true))
       .filter((topic) => (filter.to ? topic.topicDate <= filter.to : true))
       .sort((a, b) =>
@@ -125,6 +155,7 @@ export class MemoryDatabase implements Database {
     const now = this.now();
     const topic: Topic = {
       ...input,
+      slotIndex: input.slotIndex ?? 0,
       id: crypto.randomUUID(),
       status: 'pending',
       attempts: 0,
@@ -167,6 +198,7 @@ export class MemoryDatabase implements Database {
       const now = this.now();
       const topic: Topic = {
         ...input,
+        slotIndex: input.slotIndex ?? 0,
         id: crypto.randomUUID(),
         status: 'pending',
         attempts: 0,
@@ -180,9 +212,13 @@ export class MemoryDatabase implements Database {
     return { inserted, skipped };
   }
 
-  async claimDailyTopic(topicDate: ISODate, maxAttempts: number): Promise<Topic | null> {
+  async claimDailyTopic(
+    topicDate: ISODate,
+    maxAttempts: number,
+    slotIndex = 0,
+  ): Promise<Topic | null> {
     const candidates = [...this.topics.values()]
-      .filter((topic) => topic.topicDate === topicDate)
+      .filter((topic) => topic.topicDate === topicDate && topic.slotIndex === slotIndex)
       .filter(
         (topic) =>
           topic.status === 'pending' ||
@@ -207,13 +243,20 @@ export class MemoryDatabase implements Database {
   }
 
   async createPost(input: NewPost): Promise<Post> {
-    const duplicate = [...this.posts.values()].find((post) => post.runDate === input.runDate);
+    const slotIndex = input.slotIndex ?? 0;
+    const duplicate = [...this.posts.values()].find(
+      (post) => post.runDate === input.runDate && post.slotIndex === slotIndex,
+    );
     if (duplicate) {
-      throw new AppError('CONFLICT', `A post already exists for ${input.runDate}`);
+      throw new AppError(
+        'CONFLICT',
+        `A post already exists for ${input.runDate}${slotIndex > 0 ? ` slot ${slotIndex}` : ''}`,
+      );
     }
     const now = this.now();
     const post: Post = {
       ...input,
+      slotIndex,
       id: crypto.randomUUID(),
       editedByOwner: false,
       errorMessage: null,
@@ -231,13 +274,18 @@ export class MemoryDatabase implements Database {
     return this.posts.get(id) ?? null;
   }
 
-  async getPostByDate(runDate: ISODate): Promise<Post | null> {
-    return [...this.posts.values()].find((post) => post.runDate === runDate) ?? null;
+  async getPostByDate(runDate: ISODate, slotIndex = 0): Promise<Post | null> {
+    return (
+      [...this.posts.values()].find(
+        (post) => post.runDate === runDate && post.slotIndex === slotIndex,
+      ) ?? null
+    );
   }
 
   async listPosts(filter: PostFilter = {}): Promise<Post[]> {
     return [...this.posts.values()]
       .filter((post) => (filter.statuses ? filter.statuses.includes(post.status) : true))
+      .filter((post) => (filter.slotIndex === undefined ? true : post.slotIndex === filter.slotIndex))
       .filter((post) => (filter.from ? post.runDate >= filter.from : true))
       .filter((post) => (filter.to ? post.runDate <= filter.to : true))
       .sort((a, b) => b.runDate.localeCompare(a.runDate) || b.createdAt.localeCompare(a.createdAt))
@@ -582,6 +630,27 @@ export class MemoryDatabase implements Database {
     return { ...this.scheduler };
   }
 
+  async claimGenerationSlot(date: ISODate, slotIndex: number, maxAttempts: number): Promise<boolean> {
+    const key = `${date}#${slotIndex}`;
+    const previous = this.generationClaims.get(key);
+    if (previous && previous.status === 'succeeded') return false;
+    if (previous && previous.attempts >= maxAttempts) return false;
+    this.generationClaims.set(key, {
+      attempts: (previous?.attempts ?? 0) + 1,
+      status: 'claimed',
+    });
+    return true;
+  }
+
+  async finishGenerationSlot(date: ISODate, slotIndex: number, status: string): Promise<void> {
+    const key = `${date}#${slotIndex}`;
+    const previous = this.generationClaims.get(key);
+    this.generationClaims.set(key, {
+      attempts: previous?.attempts ?? 1,
+      status: status === 'succeeded' ? 'succeeded' : 'failed',
+    });
+  }
+
   async claimGenerationDay(date: ISODate, maxAttempts: number): Promise<boolean> {
     const sameDay = this.scheduler.lastGenerationDate === date;
     if (sameDay && this.scheduler.lastGenerationStatus === 'succeeded') return false;
@@ -663,6 +732,7 @@ export class MemoryDatabase implements Database {
       id: input.id ?? crypto.randomUUID(),
       sheetRowNumber: input.sheetRowNumber ?? null,
       topicDate: input.topicDate,
+      slotIndex: input.slotIndex ?? 0,
       topic: input.topic,
       contentType: input.contentType ?? 'insight',
       keyPoints: input.keyPoints ?? null,
@@ -696,6 +766,230 @@ export class MemoryDatabase implements Database {
 
   logsSnapshot(): LogEntry[] {
     return [...this.logs];
+  }
+
+  /* ------------------------------------------------ Phase 10: API keys + webhooks */
+
+  async createApiKey(input: ApiKeyInput): Promise<ApiKeyRecord> {
+    if ([...this.apiKeys.values()].some((key) => key.keyHash === input.keyHash)) {
+      throw new AppError('CONFLICT', 'This API key already exists');
+    }
+    const now = this.now();
+    const record: ApiKeyRecord = {
+      id: crypto.randomUUID(),
+      name: input.name,
+      keyHash: input.keyHash,
+      keyPrefix: input.keyPrefix,
+      scopes: input.scopes,
+      lastUsedAt: null,
+      revokedAt: null,
+      createdAt: now,
+    };
+    this.apiKeys.set(record.id, record);
+    return record;
+  }
+
+  async listApiKeys(): Promise<ApiKeyRecord[]> {
+    return [...this.apiKeys.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async findApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | null> {
+    return [...this.apiKeys.values()].find((key) => key.keyHash === keyHash) ?? null;
+  }
+
+  async revokeApiKey(id: string, at: string): Promise<ApiKeyRecord> {
+    const key = this.apiKeys.get(id);
+    if (!key) throw new AppError('NOT_FOUND', `API key ${id} not found`);
+    const revoked: ApiKeyRecord = { ...key, revokedAt: at };
+    this.apiKeys.set(id, revoked);
+    return revoked;
+  }
+
+  async touchApiKey(id: string, at: string): Promise<void> {
+    const key = this.apiKeys.get(id);
+    if (key) this.apiKeys.set(id, { ...key, lastUsedAt: at });
+  }
+
+  async listWebhookEndpoints(options: { activeOnly?: boolean } = {}): Promise<WebhookEndpoint[]> {
+    const all = [...this.webhookEndpoints.values()].sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+    return options.activeOnly ? all.filter((endpoint) => endpoint.active) : all;
+  }
+
+  async createWebhookEndpoint(input: NewWebhookEndpoint): Promise<WebhookEndpoint> {
+    const now = this.now();
+    const endpoint: WebhookEndpoint = {
+      id: crypto.randomUUID(),
+      name: input.name,
+      url: input.url,
+      secret: input.secret,
+      events: input.events,
+      active: input.active ?? true,
+      failureCount: 0,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastError: null,
+      createdAt: now,
+    };
+    this.webhookEndpoints.set(endpoint.id, endpoint);
+    return endpoint;
+  }
+
+  async updateWebhookEndpoint(id: string, patch: WebhookEndpointPatch): Promise<WebhookEndpoint> {
+    const endpoint = this.webhookEndpoints.get(id);
+    if (!endpoint) throw new AppError('NOT_FOUND', `Webhook endpoint ${id} not found`);
+    const updated: WebhookEndpoint = {
+      ...endpoint,
+      name: patch.name ?? endpoint.name,
+      url: patch.url ?? endpoint.url,
+      secret: patch.secret ?? endpoint.secret,
+      events: patch.events ?? endpoint.events,
+      active: patch.active ?? endpoint.active,
+      failureCount: patch.failureCount ?? endpoint.failureCount,
+      lastSuccessAt:
+        patch.lastSuccessAt !== undefined ? patch.lastSuccessAt : endpoint.lastSuccessAt,
+      lastFailureAt:
+        patch.lastFailureAt !== undefined ? patch.lastFailureAt : endpoint.lastFailureAt,
+      lastError: patch.lastError !== undefined ? patch.lastError : endpoint.lastError,
+    };
+    this.webhookEndpoints.set(id, updated);
+    return updated;
+  }
+
+  async deleteWebhookEndpoint(id: string): Promise<void> {
+    this.webhookEndpoints.delete(id);
+    for (const [deliveryId, delivery] of [...this.webhookDeliveries.entries()]) {
+      if (delivery.endpointId === id) this.webhookDeliveries.delete(deliveryId);
+    }
+  }
+
+  async enqueueWebhookDelivery(input: {
+    endpointId: string;
+    event: string;
+    eventId: string;
+    payload: Record<string, unknown>;
+    nextAttemptAt: string;
+  }): Promise<boolean> {
+    const duplicate = [...this.webhookDeliveries.values()].some(
+      (delivery) =>
+        delivery.endpointId === input.endpointId && delivery.eventId === input.eventId,
+    );
+    if (duplicate) return false;
+    const delivery: WebhookDelivery = {
+      id: crypto.randomUUID(),
+      endpointId: input.endpointId,
+      event: input.event,
+      eventId: input.eventId,
+      payload: input.payload,
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: input.nextAttemptAt,
+      responseStatus: null,
+      responseBody: null,
+      deliveredAt: null,
+      createdAt: this.now(),
+    };
+    this.webhookDeliveries.set(delivery.id, delivery);
+    return true;
+  }
+
+  async claimWebhookDeliveries(limit: number): Promise<WebhookDelivery[]> {
+    const now = this.now();
+    const due = [...this.webhookDeliveries.values()]
+      .filter((delivery) => delivery.status === 'pending' && delivery.nextAttemptAt <= now)
+      .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt))
+      .slice(0, limit);
+    return due.map((delivery) => {
+      const claimed: WebhookDelivery = {
+        ...delivery,
+        status: 'delivering',
+        attempts: delivery.attempts + 1,
+      };
+      this.webhookDeliveries.set(claimed.id, claimed);
+      return claimed;
+    });
+  }
+
+  async updateWebhookDelivery(
+    id: string,
+    patch: {
+      status: WebhookDelivery['status'];
+      attempts: number;
+      nextAttemptAt: string;
+      responseStatus: number | null;
+      responseBody: string | null;
+      deliveredAt: string | null;
+    },
+  ): Promise<void> {
+    const delivery = this.webhookDeliveries.get(id);
+    if (!delivery) return;
+    this.webhookDeliveries.set(id, { ...delivery, ...patch });
+  }
+
+  async listWebhookDeliveries(
+    options: { endpointId?: string; statuses?: WebhookDelivery['status'][]; limit?: number } = {},
+  ): Promise<WebhookDelivery[]> {
+    return [...this.webhookDeliveries.values()]
+      .filter((delivery) =>
+        options.endpointId ? delivery.endpointId === options.endpointId : true,
+      )
+      .filter((delivery) =>
+        options.statuses ? options.statuses.includes(delivery.status) : true,
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, options.limit ?? 100);
+  }
+
+  async savePushSubscription(input: NewPushSubscription): Promise<PushSubscription> {
+    const existing = [...this.pushSubscriptions.values()].find(
+      (subscription) => subscription.endpoint === input.endpoint,
+    );
+    const now = this.now();
+    const record: PushSubscription = {
+      id: existing?.id ?? crypto.randomUUID(),
+      endpoint: input.endpoint,
+      p256dh: input.p256dh,
+      auth: input.auth,
+      userAgent: input.userAgent,
+      failureCount: existing?.failureCount ?? 0,
+      lastSuccessAt: existing?.lastSuccessAt ?? null,
+      lastError: existing?.lastError ?? null,
+      createdAt: existing?.createdAt ?? now,
+    };
+    this.pushSubscriptions.set(record.id, record);
+    return record;
+  }
+
+  async listPushSubscriptions(): Promise<PushSubscription[]> {
+    return [...this.pushSubscriptions.values()].sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+  }
+
+  async deletePushSubscription(endpoint: string): Promise<void> {
+    for (const [id, subscription] of [...this.pushSubscriptions.entries()]) {
+      if (subscription.endpoint === endpoint) this.pushSubscriptions.delete(id);
+    }
+  }
+
+  async recordPushResult(
+    id: string,
+    result: { ok: boolean; status?: number; error?: string; at: string },
+  ): Promise<void> {
+    const subscription = this.pushSubscriptions.get(id);
+    if (!subscription) return;
+    const gone = result.status === 404 || result.status === 410;
+    if (gone) {
+      this.pushSubscriptions.delete(id);
+      return;
+    }
+    this.pushSubscriptions.set(id, {
+      ...subscription,
+      failureCount: result.ok ? 0 : subscription.failureCount + 1,
+      lastSuccessAt: result.ok ? result.at : subscription.lastSuccessAt,
+      lastError: result.ok ? null : (result.error ?? 'delivery failed'),
+    });
   }
 }
 

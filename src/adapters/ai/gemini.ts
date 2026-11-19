@@ -35,6 +35,27 @@ const VARIANTS_SCHEMA = {
   required: ['variants'],
 } as const;
 
+const SUGGESTIONS_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    suggestions: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          topic: { type: 'STRING' },
+          angle: { type: 'STRING' },
+          keyPoints: { type: 'STRING' },
+          audience: { type: 'STRING' },
+          contentType: { type: 'STRING' },
+        },
+        required: ['topic', 'angle', 'keyPoints', 'audience', 'contentType'],
+      },
+    },
+  },
+  required: ['suggestions'],
+} as const;
+
 interface GeminiResponse {
   candidates?: Array<{
     content?: { parts?: Array<{ text?: string }> };
@@ -85,6 +106,19 @@ export class GeminiProvider implements AiProvider {
     const { systemInstruction, prompt } = buildVariantsPrompt(input, wanted);
     const text = await this.request(systemInstruction, prompt, VARIANTS_SCHEMA, 4096);
     return parseVariants(text, this.id, this.model, wanted);
+  }
+
+  /**
+   * Topic planning (Phase 6). Same endpoint and retry policy as generation; the schema is
+   * deliberately loose because a suggestion is reviewed by a human before it is stored.
+   */
+  async suggestTopics(
+    input: { systemInstruction: string; prompt: string },
+    count: number,
+  ): Promise<string> {
+    const wanted = Math.min(Math.max(count, 1), 7);
+    const instruction = `${input.systemInstruction}\n\nReturn between 1 and ${wanted} suggestions. Fewer is better than padding the list.`;
+    return this.request(instruction, input.prompt, SUGGESTIONS_SCHEMA, 3072);
   }
 
   private async request(

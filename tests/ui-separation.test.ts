@@ -24,9 +24,12 @@ describe('UI separation', () => {
     const barrel = read('ui/index.ts');
     expect(barrel).toContain("export * from './primitives'");
     expect(barrel).toContain("export * from './icons'");
-    // The shell is intentionally a separate entry point so pages stay small.
-    expect(barrel).not.toContain("export * from './layout'");
-    expect(read('ui/shell.ts')).toContain("export * from './layout'");
+    // The shell is intentionally a separate entry point so pages stay small,
+    // and it is split into small files behind that barrel (Phase 5).
+    const shellBarrel = read('ui/shell.ts');
+    expect(barrel).not.toContain("export * from './shell");
+    expect(shellBarrel).toContain("export * from './shell/shell'");
+    expect(shellBarrel).toContain("export * from './nav'");
   });
 
   it('keeps tokens in one place and the Tailwind theme read from them', () => {

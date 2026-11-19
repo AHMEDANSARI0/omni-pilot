@@ -57,7 +57,7 @@ export default function HistoryPage() {
                 href={item.publishedUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1 truncate text-[12px] text-primary hover:underline"
+                className="flex h-11 items-center gap-1 truncate text-[12px] text-primary hover:underline sm:h-auto"
               >
                 <IconExternal className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 <span className="truncate">{item.publishedUrl}</span>

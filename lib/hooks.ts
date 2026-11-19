@@ -78,7 +78,8 @@ export function useAction(): {
   run: <T>(
     fn: () => Promise<T>,
     onSuccess?: (result: T) => void,
-    onError?: (message: string) => void,
+    /** `error` carries the API code (e.g. DUPLICATE_TOPIC) so a caller can offer a next step. */
+    onError?: (message: string, error?: ApiRequestError) => void,
   ) => Promise<void>;
 } {
   const [busy, setBusy] = useState(false);
@@ -86,7 +87,7 @@ export function useAction(): {
     async <T>(
       fn: () => Promise<T>,
       onSuccess?: (result: T) => void,
-      onError?: (message: string) => void,
+      onError?: (message: string, error?: ApiRequestError) => void,
     ) => {
       setBusy(true);
       try {
@@ -99,7 +100,7 @@ export function useAction(): {
             : error instanceof Error
               ? error.message
               : 'Request failed';
-        onError?.(message);
+        onError?.(message, error instanceof ApiRequestError ? error : undefined);
       } finally {
         setBusy(false);
       }

@@ -13,3 +13,17 @@ coverage/
 .DS_Store
 next-env.d.ts
 tsconfig.tsbuildinfo
+
+# Patch backups and removed files are build artefacts, never source
+*.pre-phase*.bak
+.pre-phase*-removed/
+# phase 9 test output
+coverage/
+e2e/artifacts/
+e2e/report/
+test-results/
+playwright-report/
+
+# patch zips are release artefacts, not sources
+*-patcher.zip
+linkedin-ai-automation.zip

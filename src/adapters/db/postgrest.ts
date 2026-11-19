@@ -1,6 +1,15 @@
 import { AppError, safeErrorMessage } from '@/src/core/errors';
 import { defaultSettings } from '@/src/core/defaults';
 import type {
+  ApiKeyRecord,
+  NewApiKey as ApiKeyInput,
+  NewWebhookEndpoint,
+  WebhookDelivery,
+  WebhookEndpoint,
+  WebhookEndpointPatch,
+} from '@/src/core/omni';
+import type { NewPushSubscription, PushSubscription } from '@/src/core/push';
+import type {
   Approval,
   Integration,
   IntegrationProvider,
@@ -260,6 +269,8 @@ interface SettingsRow extends Row {
   hashtag_max: number;
   max_post_chars: number;
   email_notifications: boolean;
+  publish_times?: string[] | null;
+  posts_per_day?: number | null;
   updated_at: string;
 }
 
@@ -303,6 +314,11 @@ export class PostgrestDatabase implements Database {
     if (patch.hashtagMin !== undefined) body.hashtag_min = patch.hashtagMin;
     if (patch.hashtagMax !== undefined) body.hashtag_max = patch.hashtagMax;
     if (patch.maxPostChars !== undefined) body.max_post_chars = patch.maxPostChars;
+    if (patch.publishTimes !== undefined) {
+      body.publish_times = patch.publishTimes;
+      // publish_time keeps its meaning as slot 0, so an older reader still sees the first slot.
+      if (patch.publishTimes[0]) body.publish_time = patch.publishTimes[0];
+    }
     if (patch.emailNotifications !== undefined) body.email_notifications = patch.emailNotifications;
     if (Object.keys(body).length === 0) return this.getSettings();
     const rows = await this.client.update<SettingsRow>('app_settings', { id: 'eq.true' }, body);
@@ -318,8 +334,16 @@ export class PostgrestDatabase implements Database {
       limit: String(filter.limit ?? 200),
     };
     if (filter.statuses?.length) params.status = `in.(${filter.statuses.join(',')})`;
-    if (filter.from) params.topic_date = `gte.${filter.from}`;
-    if (filter.to) params.topic_date = `lte.${filter.to}`;
+    if (filter.slotIndex !== undefined) params.slot_index = `eq.${filter.slotIndex}`;
+    // A single column can only carry one operator per query, so a two-sided range has to become an
+    // `and(...)` group - assigning `gte` then `lte` to the same key silently dropped the lower bound.
+    if (filter.from && filter.to) {
+      params.and = `(topic_date.gte.${filter.from},topic_date.lte.${filter.to})`;
+    } else if (filter.from) {
+      params.topic_date = `gte.${filter.from}`;
+    } else if (filter.to) {
+      params.topic_date = `lte.${filter.to}`;
+    }
     const rows = await this.client.select<Row>('content_topics', params);
     return rows.map(mapTopic);
   }
@@ -374,10 +398,15 @@ export class PostgrestDatabase implements Database {
     return { inserted: inserted.length, skipped: payload.length - inserted.length };
   }
 
-  async claimDailyTopic(topicDate: string, maxAttempts: number): Promise<Topic | null> {
+  async claimDailyTopic(
+    topicDate: string,
+    maxAttempts: number,
+    slotIndex = 0,
+  ): Promise<Topic | null> {
     const rows = await this.client.rpc<Row[]>('claim_daily_topic', {
       p_date: topicDate,
       p_max_attempts: maxAttempts,
+      p_slot: slotIndex,
     });
     const row = Array.isArray(rows) ? rows[0] : null;
     return row ? mapTopic(row) : null;
@@ -387,6 +416,7 @@ export class PostgrestDatabase implements Database {
     const rows = await this.client.insert<Row>('generated_posts', {
       topic_id: input.topicId,
       run_date: input.runDate,
+      slot_index: input.slotIndex ?? 0,
       hook: input.hook,
       body: input.body,
       hashtags: input.hashtags,
@@ -407,12 +437,30 @@ export class PostgrestDatabase implements Database {
     return row ? mapPost(row) : null;
   }
 
-  async getPostByDate(runDate: string): Promise<Post | null> {
+  async getPostByDate(runDate: string, slotIndex = 0): Promise<Post | null> {
     const row = await this.selectOne<Row>('generated_posts', {
       select: '*',
       run_date: `eq.${runDate}`,
+      slot_index: `eq.${slotIndex}`,
     });
     return row ? mapPost(row) : null;
+  }
+
+  async claimGenerationSlot(date: string, slotIndex: number, maxAttempts: number): Promise<boolean> {
+    const claimed = await this.client.rpc<boolean>('claim_generation_slot', {
+      p_date: date,
+      p_slot: slotIndex,
+      p_max_attempts: maxAttempts,
+    });
+    return claimed === true;
+  }
+
+  async finishGenerationSlot(date: string, slotIndex: number, status: string): Promise<void> {
+    await this.client.rpc('finish_generation_slot', {
+      p_date: date,
+      p_slot: slotIndex,
+      p_status: status,
+    });
   }
 
   async listPosts(filter: PostFilter = {}): Promise<Post[]> {
@@ -423,8 +471,14 @@ export class PostgrestDatabase implements Database {
     };
     if (filter.offset) params.offset = String(filter.offset);
     if (filter.statuses?.length) params.status = `in.(${filter.statuses.join(',')})`;
-    if (filter.from) params.run_date = `gte.${filter.from}`;
-    if (filter.to) params.run_date = `lte.${filter.to}`;
+    if (filter.slotIndex !== undefined) params.slot_index = `eq.${filter.slotIndex}`;
+    if (filter.from && filter.to) {
+      params.and = `(run_date.gte.${filter.from},run_date.lte.${filter.to})`;
+    } else if (filter.from) {
+      params.run_date = `gte.${filter.from}`;
+    } else if (filter.to) {
+      params.run_date = `lte.${filter.to}`;
+    }
     const rows = await this.client.select<Row>('generated_posts', params);
     return rows.map(mapPost);
   }
@@ -849,6 +903,269 @@ export class PostgrestDatabase implements Database {
       redirectAfter: row.redirect_after ? String(row.redirect_after) : null,
     };
   }
+
+  /* ------------------------------------------------ Phase 10: API keys + webhooks */
+
+  async createApiKey(input: ApiKeyInput): Promise<ApiKeyRecord> {
+    const rows = await this.client.insert<Row>('api_keys', {
+      name: input.name,
+      key_hash: input.keyHash,
+      key_prefix: input.keyPrefix,
+      scopes: input.scopes,
+    });
+    const row = rows[0];
+    if (!row) throw new AppError('DATABASE_ERROR', 'API key insert returned no row');
+    return mapApiKey(row);
+  }
+
+  async listApiKeys(): Promise<ApiKeyRecord[]> {
+    const rows = await this.client.select<Row>('api_keys', {
+      select: '*',
+      order: 'created_at.desc',
+    });
+    return rows.map(mapApiKey);
+  }
+
+  async findApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | null> {
+    const row = await this.selectOne<Row>('api_keys', { select: '*', key_hash: `eq.${keyHash}` });
+    return row ? mapApiKey(row) : null;
+  }
+
+  async revokeApiKey(id: string, at: string): Promise<ApiKeyRecord> {
+    const rows = await this.client.update<Row>('api_keys', { id: `eq.${id}` }, { revoked_at: at });
+    const row = rows[0];
+    if (!row) throw new AppError('NOT_FOUND', `API key ${id} not found`);
+    return mapApiKey(row);
+  }
+
+  async touchApiKey(id: string, at: string): Promise<void> {
+    await this.client.update('api_keys', { id: `eq.${id}` }, { last_used_at: at });
+  }
+
+  async listWebhookEndpoints(
+    options: { activeOnly?: boolean } = {},
+  ): Promise<WebhookEndpoint[]> {
+    const params: Record<string, string> = { select: '*', order: 'created_at.asc' };
+    if (options.activeOnly) params.active = 'is.true';
+    const rows = await this.client.select<Row>('webhook_endpoints', params);
+    return rows.map(mapWebhookEndpoint);
+  }
+
+  async createWebhookEndpoint(input: NewWebhookEndpoint): Promise<WebhookEndpoint> {
+    const rows = await this.client.insert<Row>('webhook_endpoints', {
+      name: input.name,
+      url: input.url,
+      secret: input.secret,
+      events: input.events,
+      active: input.active ?? true,
+    });
+    const row = rows[0];
+    if (!row) throw new AppError('DATABASE_ERROR', 'Webhook insert returned no row');
+    return mapWebhookEndpoint(row);
+  }
+
+  async updateWebhookEndpoint(
+    id: string,
+    patch: WebhookEndpointPatch,
+  ): Promise<WebhookEndpoint> {
+    const body: Row = {};
+    if (patch.name !== undefined) body.name = patch.name;
+    if (patch.url !== undefined) body.url = patch.url;
+    if (patch.secret !== undefined) body.secret = patch.secret;
+    if (patch.events !== undefined) body.events = patch.events;
+    if (patch.active !== undefined) body.active = patch.active;
+    if (patch.failureCount !== undefined) body.failure_count = patch.failureCount;
+    if (patch.lastSuccessAt !== undefined) body.last_success_at = patch.lastSuccessAt;
+    if (patch.lastFailureAt !== undefined) body.last_failure_at = patch.lastFailureAt;
+    if (patch.lastError !== undefined) body.last_error = patch.lastError;
+    const rows = await this.client.update<Row>('webhook_endpoints', { id: `eq.${id}` }, body);
+    const row = rows[0];
+    if (!row) throw new AppError('NOT_FOUND', `Webhook endpoint ${id} not found`);
+    return mapWebhookEndpoint(row);
+  }
+
+  async deleteWebhookEndpoint(id: string): Promise<void> {
+    await this.client.remove('webhook_endpoints', { id: `eq.${id}` });
+  }
+
+  async enqueueWebhookDelivery(input: {
+    endpointId: string;
+    event: string;
+    eventId: string;
+    payload: Record<string, unknown>;
+    nextAttemptAt: string;
+  }): Promise<boolean> {
+    // `resolution=ignore-duplicates` turns the unique (endpoint, event_id) index into "already queued",
+    // so a retried tick cannot double-deliver an event.
+    const rows = await this.client.insert<Row>(
+      'webhook_deliveries',
+      {
+        endpoint_id: input.endpointId,
+        event: input.event,
+        event_id: input.eventId,
+        payload: input.payload,
+        next_attempt_at: input.nextAttemptAt,
+      },
+      { onConflict: 'endpoint_id,event_id', ignoreDuplicates: true },
+    );
+    return rows.length > 0;
+  }
+
+  async claimWebhookDeliveries(limit: number): Promise<WebhookDelivery[]> {
+    const rows = await this.client.rpc<Row[]>('claim_webhook_deliveries', { p_limit: limit });
+    return (Array.isArray(rows) ? rows : []).map(mapWebhookDelivery);
+  }
+
+  async updateWebhookDelivery(
+    id: string,
+    patch: {
+      status: WebhookDelivery['status'];
+      attempts: number;
+      nextAttemptAt: string;
+      responseStatus: number | null;
+      responseBody: string | null;
+      deliveredAt: string | null;
+    },
+  ): Promise<void> {
+    await this.client.update(
+      'webhook_deliveries',
+      { id: `eq.${id}` },
+      {
+        status: patch.status,
+        attempts: patch.attempts,
+        next_attempt_at: patch.nextAttemptAt,
+        response_status: patch.responseStatus,
+        response_body: patch.responseBody,
+        delivered_at: patch.deliveredAt,
+      },
+    );
+  }
+
+  async listWebhookDeliveries(
+    options: { endpointId?: string; statuses?: WebhookDelivery['status'][]; limit?: number } = {},
+  ): Promise<WebhookDelivery[]> {
+    const params: Record<string, string> = {
+      select: '*',
+      order: 'created_at.desc',
+      limit: String(options.limit ?? 50),
+    };
+    if (options.endpointId) params.endpoint_id = `eq.${options.endpointId}`;
+    if (options.statuses?.length) params.status = `in.(${options.statuses.join(',')})`;
+    const rows = await this.client.select<Row>('webhook_deliveries', params);
+    return rows.map(mapWebhookDelivery);
+  }
+
+  async savePushSubscription(input: NewPushSubscription): Promise<PushSubscription> {
+    // Endpoint is unique: a re-subscribe from the same browser updates the row instead of piling up.
+    const rows = await this.client.insert<Row>(
+      'push_subscriptions',
+      {
+        endpoint: input.endpoint,
+        p256dh: input.p256dh,
+        auth: input.auth,
+        user_agent: input.userAgent,
+      },
+      { onConflict: 'endpoint', ignoreDuplicates: false },
+    );
+    const row = rows[0];
+    if (!row) throw new AppError('DATABASE_ERROR', 'Push subscription insert returned no row');
+    return mapPushSubscription(row);
+  }
+
+  async listPushSubscriptions(): Promise<PushSubscription[]> {
+    const rows = await this.client.select<Row>('push_subscriptions', {
+      select: '*',
+      order: 'created_at.asc',
+    });
+    return rows.map(mapPushSubscription);
+  }
+
+  async deletePushSubscription(endpoint: string): Promise<void> {
+    await this.client.remove('push_subscriptions', { endpoint: `eq.${endpoint}` });
+  }
+
+  async recordPushResult(
+    id: string,
+    result: { ok: boolean; status?: number; error?: string; at: string },
+  ): Promise<void> {
+    if (result.status === 404 || result.status === 410) {
+      // The browser dropped the subscription: keep the table clean instead of retrying forever.
+      await this.client.remove('push_subscriptions', { id: `eq.${id}` });
+      return;
+    }
+    const current = await this.selectOne<Row>('push_subscriptions', { select: '*', id: `eq.${id}` });
+    const failures = Number(current?.failure_count ?? 0);
+    await this.client.update(
+      'push_subscriptions',
+      { id: `eq.${id}` },
+      result.ok
+        ? { failure_count: 0, last_success_at: result.at, last_error: null }
+        : { failure_count: failures + 1, last_error: result.error ?? 'delivery failed' },
+    );
+  }
+}
+
+function mapApiKey(row: Row): ApiKeyRecord {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    keyHash: String(row.key_hash),
+    keyPrefix: String(row.key_prefix ?? ''),
+    scopes: arrays(row.scopes) as ApiKeyRecord['scopes'],
+    lastUsedAt: ts(row.last_used_at),
+    revokedAt: ts(row.revoked_at),
+    createdAt: requiredTs(row.created_at),
+  };
+}
+
+function mapWebhookEndpoint(row: Row): WebhookEndpoint {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    url: String(row.url ?? ''),
+    secret: String(row.secret ?? ''),
+    events: arrays(row.events),
+    active: Boolean(row.active),
+    failureCount: Number(row.failure_count ?? 0),
+    lastSuccessAt: ts(row.last_success_at),
+    lastFailureAt: ts(row.last_failure_at),
+    lastError: row.last_error ? String(row.last_error) : null,
+    createdAt: requiredTs(row.created_at),
+  };
+}
+
+function mapWebhookDelivery(row: Row): WebhookDelivery {
+  return {
+    id: String(row.id),
+    endpointId: String(row.endpoint_id),
+    event: String(row.event),
+    eventId: String(row.event_id),
+    payload: (row.payload as Record<string, unknown>) ?? {},
+    status: String(row.status ?? 'pending') as WebhookDelivery['status'],
+    attempts: Number(row.attempts ?? 0),
+    nextAttemptAt: requiredTs(row.next_attempt_at),
+    responseStatus:
+      row.response_status === null || row.response_status === undefined
+        ? null
+        : Number(row.response_status),
+    responseBody: row.response_body ? String(row.response_body) : null,
+    deliveredAt: ts(row.delivered_at),
+    createdAt: requiredTs(row.created_at),
+  };
+}
+
+function mapPushSubscription(row: Row): PushSubscription {
+  return {
+    id: String(row.id),
+    endpoint: String(row.endpoint),
+    p256dh: String(row.p256dh),
+    auth: String(row.auth),
+    userAgent: row.user_agent ? String(row.user_agent) : null,
+    failureCount: Number(row.failure_count ?? 0),
+    lastSuccessAt: ts(row.last_success_at),
+    lastError: row.last_error ? String(row.last_error) : null,
+    createdAt: requiredTs(row.created_at),
+  };
 }
 
 function mapSettings(row: SettingsRow): Settings {
@@ -870,6 +1187,13 @@ function mapSettings(row: SettingsRow): Settings {
     hashtagMax: Number(row.hashtag_max ?? 5),
     maxPostChars: Number(row.max_post_chars ?? 2800),
     emailNotifications: Boolean(row.email_notifications),
+    // Phase 10: falls back to the single publish_time for rows written before the migration.
+    publishTimes: (() => {
+      const list = arrays(row.publish_times as string[] | null)
+        .map((time) => shortTime(String(time)))
+        .filter(Boolean);
+      return list.length > 0 ? list : [shortTime(row.publish_time)];
+    })(),
     updatedAt: requiredTs(row.updated_at),
   };
 }
@@ -882,6 +1206,7 @@ function mapTopic(row: Row): Topic {
         ? null
         : Number(row.sheet_row_number),
     topicDate: dateOnly(row.topic_date),
+    slotIndex: Number(row.slot_index ?? 0),
     topic: String(row.topic),
     contentType: String(row.content_type ?? 'insight'),
     keyPoints: row.key_points ? String(row.key_points) : null,
@@ -916,6 +1241,7 @@ function mapPost(row: Row): Post {
     id: String(row.id),
     topicId: row.topic_id ? String(row.topic_id) : null,
     runDate: dateOnly(row.run_date),
+    slotIndex: Number(row.slot_index ?? 0),
     hook: String(row.hook ?? ''),
     body: String(row.body ?? ''),
     hashtags: arrays(row.hashtags),

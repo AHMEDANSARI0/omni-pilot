@@ -1,5 +1,7 @@
+import { checkDraft } from './duplicate';
 import { AppError } from './errors';
 import { hardIssues, validateDraft } from './format';
+import { buildHookLibrary, hookGuidance } from './hooks';
 import { createLogger, type Logger } from './logger';
 import type { GeneratePostInput } from './ports';
 import type { Services } from './services';
@@ -55,6 +57,8 @@ export async function generateDraftOptions(
       .map((post) => post.hook)
       .filter(Boolean)
       .slice(0, 8),
+    // Phase 7: what actually worked for this owner, and what they rejected.
+    hookLibrary: hookGuidance(buildHookLibrary(recentPosts)),
   };
 
   const formatOptions = {
@@ -85,6 +89,23 @@ export async function generateDraftOptions(
         problems.push(...blocking);
         continue;
       }
+
+      // Phase 7: a draft that repeats recent work is not an option, it is a mistake. It is dropped
+      // with the reason, so the retry gets told what to avoid instead of being fed it again.
+      const repeat = checkDraft(
+        { hook: formatted.hook, body: formatted.body },
+        recentPosts.map((post) => ({ hook: post.hook, body: post.body, runDate: post.runDate })),
+      );
+      if (repeat.duplicate) {
+        problems.push(`Repeats earlier work: ${repeat.reason}`);
+        await log.warn('generation.duplicate_draft', `Dropped a draft that repeats recent work`, {
+          reason: repeat.reason,
+          score: repeat.score,
+          matchOf: repeat.matchOf,
+        });
+        continue;
+      }
+
       options.push({
         angle: cleanAngle(draft.angle, options.length + 1),
         formatted,

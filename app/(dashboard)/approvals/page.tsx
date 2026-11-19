@@ -102,7 +102,7 @@ export default function ApprovalsPage() {
                 <button
                   type="button"
                   onClick={() => setExpanded((current) => ({ ...current, [post.id]: !isExpanded }))}
-                  className="mt-2 text-[12px] font-medium text-primary"
+                  className="mt-1 flex min-h-[44px] items-center text-[12px] font-medium text-primary"
                 >
                   {isExpanded ? 'Show less' : 'Show full post'}
                 </button>
@@ -127,7 +127,13 @@ export default function ApprovalsPage() {
                     <IconMailWarning className="h-3.5 w-3.5" aria-hidden /> Approval email was not
                     delivered.
                   </span>
-                  <Button size="sm" variant="ghost" loading={busy} onClick={() => resend(post.id)}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="min-h-[44px]"
+                    loading={busy}
+                    onClick={() => resend(post.id)}
+                  >
                     Send again
                   </Button>
                 </div>
@@ -156,8 +162,14 @@ export default function ApprovalsPage() {
                 }}
               />
 
-              <div className="flex justify-end">
-                <Button size="sm" variant="ghost" loading={busy} onClick={() => resend(post.id)}>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="min-h-[44px]"
+                  loading={busy}
+                  onClick={() => resend(post.id)}
+                >
                   Resend email
                 </Button>
               </div>
