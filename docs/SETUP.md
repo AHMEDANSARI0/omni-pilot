@@ -25,7 +25,13 @@ Resend or the LinkedIn self-serve API. **YouTube/laptop-free**: the scheduler ru
 2. Apply the migrations — either:
    - CLI: `supabase link --project-ref <ref> && supabase db push`, or
    - Dashboard → SQL Editor → paste and run, in order: `0001_schema.sql`, `0002_functions.sql`,
-     `0003_whatsapp.sql` (optional WhatsApp channel), `0004_post_variants.sql`.
+     `0003_whatsapp.sql` (optional WhatsApp channel), `0004_post_variants.sql`,
+     `0005_slots_and_api.sql` (multiple posts per day, hashed API keys, webhook deliveries, push devices),
+     `0006_recover_webhooks.sql` (a webhook a dead worker claimed goes back to the queue instead of being lost).
+
+   `0005` is safe to run on a database that already has data: it adds columns with defaults
+   (`publish_times`, `slot_index`), backfills `publish_times` from the existing `publish_time`, and adds
+   the new tables without touching `generated_posts` rows.
 3. Verify from your machine — two commands, both quick:
 
    ```bash

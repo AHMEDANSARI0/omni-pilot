@@ -13,10 +13,14 @@ run_worker_first = ["/api/*"]
 [observability]
 enabled = true
 
-# Scheduler: single 5-minute tick. All timezone/day logic lives in code
-# (see src/core/schedule.ts) so DST and custom publish times stay correct.
+# Scheduler. All timezone/day logic lives in code (see src/core/schedule.ts) so DST and custom publish
+# times stay correct, which is why these are plain intervals and not wall-clock crons.
+#
+#   */5 * * * *  the automation tick: generate, publish, expire, warn
+#   * * * * *    the webhook queue only, so a retry fires within a minute of falling due instead of
+#                waiting for the next 5-minute tick. Cheap when the queue is empty.
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "* * * * *"]
 
 [vars]
 APP_ENV = "production"

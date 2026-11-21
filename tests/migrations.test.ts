@@ -52,13 +52,31 @@ function createdFunctions(): string[] {
 }
 
 describe('Migrations match the adapter', () => {
-  it('ships all four migrations', () => {
-    expect(migrationFiles).toEqual([
-      '0001_schema.sql',
-      '0002_functions.sql',
-      '0003_whatsapp.sql',
-      '0004_post_variants.sql',
-    ]);
+  /**
+   * The list is not spelled out here on purpose.
+   *
+   * This test used to compare against a hand-written array, so *every* new migration broke it - and it broke in
+   * the one place that was supposed to keep the SQL honest. What actually matters is the naming contract:
+   * numbered files, no gaps, applied in order, every one of them reachable from `setup.sql`. A new migration
+   * that follows the contract needs no edit here; one that breaks it fails, which is the point.
+   */
+  it('numbers the migrations without gaps, and every one is in setup.sql', () => {
+    expect(migrationFiles.length).toBeGreaterThanOrEqual(5);
+    const numbers = migrationFiles.map((name) => Number(name.slice(0, 4)));
+    // 0001, 0002, ... with no holes: a gap means a file was renamed or lost.
+    numbers.forEach((value, index) => {
+      expect(Number.isInteger(value), `${migrationFiles[index]} does not start with a 4-digit number`).toBe(true);
+      expect(value).toBe(index + 1);
+    });
+    expect(migrationFiles.every((name) => name.endsWith('.sql'))).toBe(true);
+
+    // A migration that nobody can run is worse than no migration: setup.sql is the one-paste path.
+    const setup = readFileSync(join(root, 'supabase', 'setup.sql'), 'utf8');
+    for (const file of migrationFiles) {
+      expect(setup.includes(file), `supabase/setup.sql does not include ${file} (run tools/build-setup-sql.mjs)`).toBe(
+        true,
+      );
+    }
   });
 
   it('creates every table the PostgREST adapter queries', () => {
@@ -91,14 +109,19 @@ describe('Migrations match the adapter', () => {
       // 0001/0003 grant inside `execute format('grant all on public.%I to service_role', ...)`.
       const direct = new RegExp(`grant all on public\\.${table}\\b`);
       const looped = new RegExp(`'${table}'`);
-      expect(direct.test(sql) || looped.test(sql), `${table}: no service_role grant`).toBe(true);
+      expect(
+        direct.test(sql) || looped.test(sql),
+        `${table}: no service_role grant`,
+      ).toBe(true);
     }
     // No statement in the folder may grant to the browser-facing roles.
     expect(/grant\b[^;]*\bto\b[^;]*\b(anon|authenticated)\b/i.test(sql)).toBe(false);
   });
 
-  it('keeps the one-row-per-day and one-job-per-post guards in SQL', () => {
-    expect(sql).toMatch(/create unique index if not exists generated_posts_run_date_key/);
+  it('keeps the one-post-per-(day, slot) and one-job-per-post guards in SQL', () => {
+    // Phase 10 replaced the implicit one-post-per-day rule with an explicit slot identity: the unique
+    // index is what stops two ticks creating two posts for the same slot.
+    expect(sql).toMatch(/create unique index if not exists generated_posts_date_slot_key/);
     expect(sql).toMatch(/create unique index if not exists publishing_jobs_post_id_key/);
     expect(sql).toMatch(/create unique index if not exists content_topics_date_topic_key/);
     expect(sql).toMatch(/create unique index if not exists approval_requests_token_hash_key/);

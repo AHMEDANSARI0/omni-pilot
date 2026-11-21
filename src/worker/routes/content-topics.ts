@@ -82,6 +82,7 @@ R.post('/topics', async (c) => {
       topicDate: body.topicDate,
       topic: body.topic,
       contentType: body.contentType,
+      slotIndex: body.slotIndex ?? 0,
       keyPoints: body.keyPoints ?? null,
       targetAudience: body.targetAudience ?? null,
     });

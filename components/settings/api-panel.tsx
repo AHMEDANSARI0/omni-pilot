@@ -328,6 +328,14 @@ export function ApiPanel() {
                   <li key={delivery.id} className="font-mono text-[11.5px] text-muted-foreground">
                     {delivery.event} · {delivery.status} · attempt {delivery.attempts}
                     {delivery.responseStatus ? ` · HTTP ${delivery.responseStatus}` : ''}
+                    {/* A retry that is waiting is the one thing an owner cannot infer from "attempt 2":
+                        the queue drains every minute now, so say when the next one falls due. */}
+                    {delivery.status === 'pending' && delivery.nextAttemptAt ? (
+                      <span className="text-muted-foreground/70">
+                        {' '}
+                        · next try {new Date(delivery.nextAttemptAt).toLocaleTimeString()}
+                      </span>
+                    ) : null}
                   </li>
                 ))}
               </ul>

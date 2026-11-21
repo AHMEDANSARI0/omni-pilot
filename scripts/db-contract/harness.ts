@@ -59,4 +59,15 @@ export async function cleanup(client: PostgrestClient): Promise<void> {
   await client
     .remove('scheduler_state', { last_generation_date: `in.(${PROBE_DATE},${PROBE_DATE_2})` })
     .catch(() => undefined);
+  // Two tables the first version of this function forgot, so every run left them behind:
+  //   * `generation_claims` - the slot probes write a (probe date, slot) row that nothing else removes;
+  //   * `whatsapp_messages` - the de-duplication probe records a message id.
+  // A contract check that leaves rows in the owner's tables is not a contract check, it is a slow leak -
+  // found by counting the tables after a run on a real database.
+  await client
+    .remove('generation_claims', { run_date: `in.(${PROBE_DATE},${PROBE_DATE_2})` })
+    .catch(() => undefined);
+  await client
+    .remove('whatsapp_messages', { message_id: 'like.probe-wamid-*' })
+    .catch(() => undefined);
 }

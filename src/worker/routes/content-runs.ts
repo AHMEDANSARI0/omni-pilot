@@ -27,6 +27,7 @@ R.post('/generate', async (c) => {
   const body = parseOrThrow(generateSchema, await c.req.json().catch(() => ({})));
   const result = await generateDailyPost(services, {
     runDate: body.runDate,
+    slotIndex: body.slotIndex ?? 0,
     sendEmail: body.sendEmail,
     skipSync: body.skipSync,
     trigger: c.get('actor'),

@@ -217,6 +217,15 @@ export interface Database {
   claimDueJobs(limit: number): Promise<Job[]>;
   updateJob(id: string, patch: JobPatch): Promise<Job>;
   recoverStuckJobs(): Promise<number>;
+  /**
+   * Returns webhook deliveries a dead worker left in `delivering` back to the queue, and closes the ones whose
+   * attempts are used up. Returns how many were made claimable again.
+   *
+   * Same crash-recovery idea as `recoverStuckJobs`, which only ever looked at publishing jobs: a claim is a
+   * two-step write (claim, then call), and a process that dies between them leaves a row no query ever selects
+   * again - `claim_webhook_deliveries` only reads `pending`. Proven on PostgreSQL before it was written.
+   */
+  recoverWebhookDeliveries(maxAttempts?: number): Promise<number>;
 
   getIntegration(provider: IntegrationProvider): Promise<Integration | null>;
   listIntegrations(): Promise<Integration[]>;

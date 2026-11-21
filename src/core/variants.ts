@@ -6,6 +6,7 @@ import { createLogger, type Logger } from './logger';
 import type { GeneratePostInput } from './ports';
 import type { Services } from './services';
 import { addHours, isoInstant } from './time';
+import { slotOfPost, slotOfTopic } from './slot';
 import type { DraftVariant, FormatResult, Post, PostVariant, Settings, Topic } from './types';
 
 /** How many drafts one generation call asks for. One request keeps the free quota intact. */
@@ -59,6 +60,8 @@ export async function generateDraftOptions(
       .slice(0, 8),
     // Phase 7: what actually worked for this owner, and what they rejected.
     hookLibrary: hookGuidance(buildHookLibrary(recentPosts)),
+    // Phase 10: which post of the day this is, so a template provider can vary its angle.
+    slotIndex: slotOfTopic(topic),
   };
 
   const formatOptions = {
@@ -94,7 +97,14 @@ export async function generateDraftOptions(
       // with the reason, so the retry gets told what to avoid instead of being fed it again.
       const repeat = checkDraft(
         { hook: formatted.hook, body: formatted.body },
-        recentPosts.map((post) => ({ hook: post.hook, body: post.body, runDate: post.runDate })),
+        recentPosts.map((post) => ({
+          hook: post.hook,
+          body: post.body,
+          runDate: post.runDate,
+          slotIndex: slotOfPost(post),
+        })),
+        // The draft being written belongs to this (day, slot): its own row is not "earlier work".
+        { ignore: { runDate: topic.topicDate, slotIndex: slotOfTopic(topic) } },
       );
       if (repeat.duplicate) {
         problems.push(`Repeats earlier work: ${repeat.reason}`);

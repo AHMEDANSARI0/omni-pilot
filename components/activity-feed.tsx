@@ -84,7 +84,7 @@ export function ActivityFeed({
         <CardTitle>Recent activity</CardTitle>
         <a
           href="/settings/?tab=logs"
-          className="text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
+          className="flex min-h-11 items-center px-1 text-[12px] font-medium text-accent-strong hover:text-accent-strong/80"
         >
           View all
         </a>

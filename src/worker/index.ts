@@ -28,8 +28,24 @@ export default {
       (async () => {
         try {
           const { createServices } = await import('@/src/server/services');
-          const { runAutomationTick } = await import('@/src/core/scheduler');
+          const { runAutomationTick, runWebhookTick } = await import('@/src/core/scheduler');
           const services = await createServices(env as unknown as Record<string, string>);
+
+          // Two schedules, one entry point: `* * * * *` drives the webhook queue (so a retry lands within a
+          // minute of falling due) and everything else drives the full automation tick. Deciding by the cron
+          // string keeps this a single `scheduled` handler - Cloudflare routes every trigger to it anyway.
+          if (event.cron === '* * * * *') {
+            const webhooks = await runWebhookTick(services);
+            if (webhooks.attempted > 0 || webhooks.errors.length > 0) {
+              console.log(
+                `[cron] ${event.cron} webhooks attempted=${webhooks.attempted} delivered=${
+                  webhooks.delivered
+                } retrying=${webhooks.retrying} errors=${webhooks.errors.length}`,
+              );
+            }
+            return;
+          }
+
           const result = await runAutomationTick(services, { trigger: 'cron' });
           console.log(
             `[cron] ${event.cron} generation=${result.generation.reason} published=${

@@ -357,6 +357,11 @@ export class PostgrestDatabase implements Database {
     const rows = await this.client.insert<Row>('content_topics', {
       sheet_row_number: input.sheetRowNumber,
       topic_date: input.topicDate,
+      // Phase 10: the slot this topic feeds. Omitting it is not "slot 0" - PostgREST leaves the column out of
+      // the INSERT and PostgreSQL fills the `default 0`, so the row is created, the request answers 201, and
+      // the slot the caller asked for is silently gone. `npm run e2e` saw exactly that: a second slot asked
+      // for 1 and read back 0. Always send it.
+      slot_index: input.slotIndex ?? 0,
       topic: input.topic,
       content_type: input.contentType,
       key_points: input.keyPoints,
@@ -364,7 +369,24 @@ export class PostgrestDatabase implements Database {
     });
     const row = rows[0];
     if (!row) throw new AppError('DATABASE_ERROR', 'Topic insert returned no row');
-    return mapTopic(row);
+    const created = mapTopic(row);
+    // Fail loudly instead of answering 201 with the wrong slot.
+    //
+    // The database fills `default 0` for a column the INSERT does not name, so a dropped `slot_index` looks
+    // like a successful creation and only the *second* publish time of a day notices - as
+    // `Expected: 1, Received: 0` on a topic that was just created. Comparing what came back with what was
+    // asked for turns that silent drift into one sentence naming the column.
+    const wanted = input.slotIndex ?? 0;
+    if (created.slotIndex !== wanted) {
+      throw new AppError(
+        'DATABASE_ERROR',
+        `Topic was stored in slot ${created.slotIndex} but slot ${wanted} was requested - ` +
+          'content_topics.slot_index was not written (check that the INSERT names the column and that ' +
+          'supabase/migrations/0005_slots_and_api.sql has been applied).',
+        { details: { wanted, stored: created.slotIndex, topicId: created.id } },
+      );
+    }
+    return created;
   }
 
   async updateTopic(id: string, patch: TopicPatch): Promise<Topic> {
@@ -386,6 +408,9 @@ export class PostgrestDatabase implements Database {
     const payload = topics.map((topic) => ({
       sheet_row_number: topic.sheetRowNumber,
       topic_date: topic.topicDate,
+      // Same trap as `createTopic`: an omitted column is not "slot 0", it is the column default. A sheet row
+      // that names slot 2 would be synced into slot 0, and the day would silently lose a publish time.
+      slot_index: topic.slotIndex ?? 0,
       topic: topic.topic,
       content_type: topic.contentType,
       key_points: topic.keyPoints,
@@ -707,6 +732,18 @@ export class PostgrestDatabase implements Database {
 
   async recoverStuckJobs(): Promise<number> {
     const result = await this.client.rpc<number>('recover_stuck_jobs', {});
+    return typeof result === 'number' ? result : 0;
+  }
+
+  /**
+   * `recover_webhook_deliveries` (migration 0006). A delivery claimed by a worker that then died stays
+   * `delivering` for ever: nothing selects it and nothing reports it. The function moves claims older than five
+   * minutes back to `pending`, and closes the ones that have used every attempt.
+   */
+  async recoverWebhookDeliveries(maxAttempts = 5): Promise<number> {
+    const result = await this.client.rpc<number>('recover_webhook_deliveries', {
+      p_max_attempts: maxAttempts,
+    });
     return typeof result === 'number' ? result : 0;
   }
 
@@ -1151,6 +1188,9 @@ function mapWebhookDelivery(row: Row): WebhookDelivery {
     responseBody: row.response_body ? String(row.response_body) : null,
     deliveredAt: ts(row.delivered_at),
     createdAt: requiredTs(row.created_at),
+    // `updated_at` drives crash recovery: it is how old a claim is. Falls back to `created_at` for a row written
+    // before the column existed, so the value is never undefined.
+    updatedAt: row.updated_at ? requiredTs(row.updated_at) : requiredTs(row.created_at),
   };
 }
 

@@ -9,7 +9,7 @@ import type { Services } from '@/src/core/services';
  * outside it so the route file stays readable.
  *
  * `allowDuplicate: true` keeps a *near*-duplicate. It cannot defeat the (date, topic) unique index:
- * the exact same topic on the same day is one row. Two honest outcomes, no third:
+ * the exact same topic on the same day *in the same slot* is one row. Two honest outcomes, no third:
  *   - the existing row is still queued  -> return it with `alreadyExists: true` (nothing was added)
  *   - the existing row already produced -> DUPLICATE_TOPIC naming its status, so the owner picks
  *                                          another date instead of staring at a raw CONFLICT
@@ -18,14 +18,23 @@ import type { Services } from '@/src/core/services';
 export async function handleAllowedDuplicate(
   c: Context<AppEnv>,
   services: Services,
-  topic: { topicDate: string; topic: string },
+  topic: { topicDate: string; topic: string; slotIndex?: number },
   error: unknown,
 ): Promise<Response | null> {
   if (!(error instanceof AppError) || error.code !== 'CONFLICT') return null;
 
+  // The collision is scoped to one slot.
+  //
+  // `(topic_date, topic)` is unique, so the same wording on the same day collides even when it is meant for
+  // the other slot. This lookup used to ignore the slot, so creating slot 1's topic answered
+  // `200 { topic: <slot 0's row>, alreadyExists: true }`: a success status carrying the wrong slot, and the
+  // second publish time never got a topic of its own. `npm run e2e` caught it; a unit test now pins it.
+  const slotIndex = topic.slotIndex ?? 0;
   const sameDay = await services.db.listTopics({ from: topic.topicDate, to: topic.topicDate });
   const exact = sameDay.find(
-    (candidate) => candidate.topic.trim().toLowerCase() === topic.topic.trim().toLowerCase(),
+    (candidate) =>
+      candidate.topic.trim().toLowerCase() === topic.topic.trim().toLowerCase() &&
+      candidate.slotIndex === slotIndex,
   );
   if (!exact) return null;
 

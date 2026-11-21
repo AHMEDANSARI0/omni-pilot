@@ -1,5 +1,6 @@
 import { AppError } from '@/src/core/errors';
 import { defaultSettings } from '@/src/core/defaults';
+import { slotOfPost, slotOfTopic } from '@/src/core/slot';
 import type {
   ApiKeyRecord,
   NewApiKey as ApiKeyInput,
@@ -127,7 +128,7 @@ export class MemoryDatabase implements Database {
     return [...this.topics.values()]
       .filter((topic) => (filter.statuses ? filter.statuses.includes(topic.status) : true))
       .filter((topic) =>
-        filter.slotIndex === undefined ? true : topic.slotIndex === filter.slotIndex,
+        filter.slotIndex === undefined ? true : slotOfTopic(topic) === filter.slotIndex,
       )
       .filter((topic) => (filter.from ? topic.topicDate >= filter.from : true))
       .filter((topic) => (filter.to ? topic.topicDate <= filter.to : true))
@@ -147,10 +148,17 @@ export class MemoryDatabase implements Database {
     const duplicate = [...this.topics.values()].find(
       (topic) =>
         topic.topicDate === input.topicDate &&
-        topic.topic.toLowerCase() === input.topic.toLowerCase(),
+        topic.topic.toLowerCase() === input.topic.toLowerCase() &&
+        // The real index is `(topic_date, topic)`, so two slots of one day with the same wording do collide
+        // in PostgreSQL. The memory adapter has to fail in exactly the same places the database does, or a
+        // unit test passes and the live app returns 409 - which is how this one was found.
+        slotOfTopic(topic) === (input.slotIndex ?? 0),
     );
     if (duplicate) {
-      throw new AppError('CONFLICT', `Topic already exists for ${input.topicDate}: ${input.topic}`);
+      throw new AppError(
+        'CONFLICT',
+        `Topic already exists for ${input.topicDate} slot ${input.slotIndex ?? 0}: ${input.topic}`,
+      );
     }
     const now = this.now();
     const topic: Topic = {
@@ -218,7 +226,7 @@ export class MemoryDatabase implements Database {
     slotIndex = 0,
   ): Promise<Topic | null> {
     const candidates = [...this.topics.values()]
-      .filter((topic) => topic.topicDate === topicDate && topic.slotIndex === slotIndex)
+      .filter((topic) => topic.topicDate === topicDate && slotOfTopic(topic) === slotIndex)
       .filter(
         (topic) =>
           topic.status === 'pending' ||
@@ -245,7 +253,7 @@ export class MemoryDatabase implements Database {
   async createPost(input: NewPost): Promise<Post> {
     const slotIndex = input.slotIndex ?? 0;
     const duplicate = [...this.posts.values()].find(
-      (post) => post.runDate === input.runDate && post.slotIndex === slotIndex,
+      (post) => post.runDate === input.runDate && slotOfPost(post) === slotIndex,
     );
     if (duplicate) {
       throw new AppError(
@@ -277,7 +285,7 @@ export class MemoryDatabase implements Database {
   async getPostByDate(runDate: ISODate, slotIndex = 0): Promise<Post | null> {
     return (
       [...this.posts.values()].find(
-        (post) => post.runDate === runDate && post.slotIndex === slotIndex,
+        (post) => post.runDate === runDate && slotOfPost(post) === slotIndex,
       ) ?? null
     );
   }
@@ -285,7 +293,7 @@ export class MemoryDatabase implements Database {
   async listPosts(filter: PostFilter = {}): Promise<Post[]> {
     return [...this.posts.values()]
       .filter((post) => (filter.statuses ? filter.statuses.includes(post.status) : true))
-      .filter((post) => (filter.slotIndex === undefined ? true : post.slotIndex === filter.slotIndex))
+      .filter((post) => (filter.slotIndex === undefined ? true : slotOfPost(post) === filter.slotIndex))
       .filter((post) => (filter.from ? post.runDate >= filter.from : true))
       .filter((post) => (filter.to ? post.runDate <= filter.to : true))
       .sort((a, b) => b.runDate.localeCompare(a.runDate) || b.createdAt.localeCompare(a.createdAt))
@@ -889,6 +897,7 @@ export class MemoryDatabase implements Database {
       responseBody: null,
       deliveredAt: null,
       createdAt: this.now(),
+      updatedAt: this.now(),
     };
     this.webhookDeliveries.set(delivery.id, delivery);
     return true;
@@ -905,10 +914,39 @@ export class MemoryDatabase implements Database {
         ...delivery,
         status: 'delivering',
         attempts: delivery.attempts + 1,
+        // When the claim was written - the database gets this from the `set_updated_at` trigger, and crash
+        // recovery needs it to tell an abandoned claim from one that is in flight right now.
+        updatedAt: now,
       };
       this.webhookDeliveries.set(claimed.id, claimed);
       return claimed;
     });
+  }
+
+  /**
+   * The in-memory twin of `recover_webhook_deliveries` (migration 0006), and it has to fail in the same places
+   * the database does: a claim is written, then the HTTP call happens, so a "crash" between the two leaves a row
+   * in `delivering` that no query selects again. Five minutes is the same age the SQL uses.
+   */
+  async recoverWebhookDeliveries(maxAttempts = 5): Promise<number> {
+    const cutoff = this.clock.now().getTime() - 5 * 60_000;
+    let recovered = 0;
+    for (const [id, delivery] of this.webhookDeliveries) {
+      if (delivery.status !== 'delivering') continue;
+      // `updatedAt` is when the claim was written - the closest thing this adapter has to the row's age.
+      if (new Date(delivery.updatedAt).getTime() > cutoff) continue;
+      const exhausted = delivery.attempts >= Math.max(maxAttempts, 1);
+      if (!exhausted) recovered += 1;
+      this.webhookDeliveries.set(id, {
+        ...delivery,
+        status: exhausted ? 'failed' : 'pending',
+        nextAttemptAt: this.now(),
+        responseBody:
+          delivery.responseBody ?? 'the worker stopped before the delivery finished',
+        updatedAt: this.now(),
+      });
+    }
+    return recovered;
   }
 
   async updateWebhookDelivery(
@@ -924,7 +962,7 @@ export class MemoryDatabase implements Database {
   ): Promise<void> {
     const delivery = this.webhookDeliveries.get(id);
     if (!delivery) return;
-    this.webhookDeliveries.set(id, { ...delivery, ...patch });
+    this.webhookDeliveries.set(id, { ...delivery, ...patch, updatedAt: this.now() });
   }
 
   async listWebhookDeliveries(

@@ -346,6 +346,69 @@ async function maybeWarnLinkedInExpiry(services: Services, settings: Settings): 
   return sent.sent;
 }
 
+/**
+ * A webhook-only tick, for the every-minute cron.
+ *
+ * Phase 10 sent outbound webhooks on the 5-minute automation tick, which made the retry backoff (1 / 5 / 15 /
+ * 60 minutes) only as precise as that tick: a delivery due at 10:01 went out at 10:05. This runs the queue
+ * alone - no generation, no publishing, no email, no expiry warnings - so it is safe to schedule every
+ * minute and cheap when the queue is empty (`claim_webhook_deliveries` returns nothing and the function
+ * exits).
+ *
+ * Deliberately not a second `runAutomationTick`: that would generate and publish five times an hour.
+ */
+export async function runWebhookTick(
+  services: Services,
+  options: { limit?: number } = {},
+): Promise<{
+  attempted: number;
+  delivered: number;
+  failed: number;
+  retrying: number;
+  recovered: number;
+  errors: string[];
+}> {
+  const empty = { attempted: 0, delivered: 0, failed: 0, retrying: 0, recovered: 0, errors: [] as string[] };
+  try {
+    // Crash recovery comes first, for the same reason `runAutomationTick` calls `recoverStuckJobs` before it
+    // claims work: a row claimed by a process that then died is invisible to the claim query, which only reads
+    // `pending`. Without this, that event is lost for ever - measured on a real database, not assumed.
+    // A failure here must not stop the deliveries that are healthy, so it is reported, not thrown.
+    let recovered = 0;
+    const recoveryErrors: string[] = [];
+    try {
+      recovered = await services.db.recoverWebhookDeliveries();
+      if (recovered > 0) {
+        await createLogger(services.db, { actor: 'cron' }).warn(
+          'scheduler.webhooks_recovered',
+          `Returned ${recovered} abandoned webhook claim(s) to the queue`,
+          { recovered },
+        );
+      }
+    } catch (error) {
+      recoveryErrors.push(`recover_webhooks: ${safeErrorMessage(error)}`);
+    }
+
+    const outcome = await deliverDueWebhooks(
+      { db: services.db },
+      webhookDispatcherFor(services),
+      (url, init) => services.webhookSender(url, init),
+      { limit: options.limit ?? 20 },
+    );
+    return { ...outcome, recovered, errors: recoveryErrors };
+  } catch (error) {
+    // Same posture as the main tick: a broken webhook endpoint must never break the cron.
+    const message = safeErrorMessage(error);
+    try {
+      const log = createLogger(services.db, { actor: 'cron' });
+      await log.error('scheduler.webhook_tick_failed', message);
+    } catch {
+      // Logging must not be the thing that throws.
+    }
+    return { ...empty, errors: [message] };
+  }
+}
+
 export interface ScheduleOverview {
   now: string;
   localDate: string;

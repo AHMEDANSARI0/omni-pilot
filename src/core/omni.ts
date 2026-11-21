@@ -86,6 +86,14 @@ export interface WebhookDelivery {
   responseBody: string | null;
   deliveredAt: ISOInstant | null;
   createdAt: ISOInstant;
+  /**
+   * When this row last changed - which for a claimed delivery is when the claim was written.
+   *
+   * It was in the table all along (`webhook_deliveries.updated_at`, with a trigger) but not in the type, so no
+   * code could ask the one question crash recovery needs: how old is this claim? Without it a delivery left in
+   * `delivering` by a dead worker could not be told apart from one that is in flight right now.
+   */
+  updatedAt: ISOInstant;
 }
 
 /** Every event this app can emit. A webhook endpoint subscribes to a subset; '*' means all. */

@@ -133,10 +133,23 @@ export interface DraftCheck {
  */
 export function checkDraft(
   draft: { hook: string; body: string },
-  recent: Array<{ hook: string; body: string; runDate: string }>,
-  options: { threshold?: number } = {},
+  recent: Array<{ hook: string; body: string; runDate: string; slotIndex?: number }>,
+  options: { threshold?: number; ignore?: { runDate: string; slotIndex: number } } = {},
 ): DraftCheck {
-  const hookMatch = closest(draft.hook, recent, (post) => post.hook, options.threshold ?? HOOK_THRESHOLD);
+  // Phase 10: one day can carry several posts, and those posts are siblings by design - same day, same
+  // theme, written minutes apart. Comparing them against each other rejects the second one every time:
+  // "Repeats earlier work: The body repeats the post from <today>". That is not a repeat, it is the feature.
+  //
+  // So the hard guard only compares against *other days*. Same-day posts still reach the model as guidance
+  // (`recentHooks` and the hook library in variants.ts), which nudges a different angle without refusing the
+  // post - a real repeat of an earlier day is still rejected, which is what this guard is for.
+  //
+  // The one same-day row that is special is the (day, slot) this draft will become; `ignore` names it, and it
+  // is skipped even if the caller passed a same-day row for some reason.
+  const comparable = options.ignore
+    ? recent.filter((post) => post.runDate !== options.ignore!.runDate)
+    : recent;
+  const hookMatch = closest(draft.hook, comparable, (post) => post.hook, options.threshold ?? HOOK_THRESHOLD);
   if (hookMatch) {
     return {
       duplicate: true,
@@ -145,7 +158,7 @@ export function checkDraft(
       reason: `The opening repeats a post from ${hookMatch.item.runDate} (${Math.round(hookMatch.score * 100)}% similar)`,
     };
   }
-  const bodyMatch = closest(draft.body, recent, (post) => post.body, DUPLICATE_THRESHOLD);
+  const bodyMatch = closest(draft.body, comparable, (post) => post.body, DUPLICATE_THRESHOLD);
   if (bodyMatch) {
     return {
       duplicate: true,
